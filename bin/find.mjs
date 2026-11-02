@@ -1,0 +1,35 @@
+#!/usr/bin/env node
+// find.mjs <query> | --relates-to <path> | --similar <key>   [--json]
+import { parseArgs, fail } from '../scripts/util.mjs';
+import { loadContext } from '../scripts/config.mjs';
+import { find, findWords, findRelatesTo, findSimilar, formatMatches } from '../scripts/find.mjs';
+
+const args = parseArgs(process.argv.slice(2));
+try {
+  const ctx = loadContext({ project: args.project });
+  let matches;
+  let label;
+  if (args['relates-to']) {
+    matches = findRelatesTo(ctx.brainDir, args['relates-to']);
+    label = `relates-to ${args['relates-to']}`;
+  } else if (args.similar) {
+    matches = findSimilar(ctx.brainDir, args.similar);
+    label = `similar ${args.similar}`;
+  } else {
+    const q = args._.join(' ');
+    if (!q) fail('usage: find.mjs <query> | --relates-to <path> | --similar <key>');
+    matches = find(ctx.brainDir, q);
+    label = q;
+    if (!matches.length) {
+      matches = findWords(ctx.brainDir, q);
+      if (matches.length && !args.json) process.stdout.write(`no exact match: ${q}; word matches:\n`);
+    }
+  }
+  if (args.json) {
+    process.stdout.write(JSON.stringify(matches) + '\n');
+  } else {
+    process.stdout.write((matches.length ? formatMatches(matches) : `no match: ${label}`) + '\n');
+  }
+} catch (err) {
+  fail(err.message);
+}

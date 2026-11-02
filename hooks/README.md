@@ -1,0 +1,12 @@
+# hooks/
+
+Hooky pluginu pre Claude Code. `hooks.json` ich registruje v exec forme (`"command": "node"`, skript v `args` cez `${CLAUDE_PLUGIN_ROOT}`), skripty `*.mjs` prekladajú vstup/výstup Claude Code; logika je v `scripts/` (P-017, P-034). Každý skript exportuje `HOOK_META` (udalosť, trieda výstupu podľa P-023, limit); test `hooks-json.test.mjs` to kontroluje. Codex volá tie isté skripty z generovaného `<project>/.codex/hooks.json`; kde sa formát líši (SessionStart, PreToolUse, Stop), ide cez prekladač `adapters/codex/hook.mjs`.
+
+| Súbor | Udalosť | Princíp | Trieda výstupu (P-023) |
+|---|---|---|---|
+| `session-start.mjs` | SessionStart (startup, resume, clear, compact) | P-021, P-022, P-024, P-026, P-038 | štartovacia sekvencia, limit 15 000 znakov, nikdy orezanie; stavový riadok vždy (uloží ho ako `last_status`) |
+| `user-prompt-submit.mjs` | UserPromptSubmit | P-023 e, P-038, P-043, P-044, P-047, P-003, P-013 | (e) stavový riadok `thread | topic | mail: n` iba pri zmene alebo v ťahu so zvončekom + najviac 1 riadok signálu (c): riadok pošty `mail: n waiting: <id> <kategória>, …` (bez textu) pri zmene počtu, budenie (s riadkom pošty, inak „wake: no new mail; end the turn“, pri výpadku „wake: mail unavailable (comms unavailable)“), `no reply <id>`/`undelivered <id>` (jeden riadok z `comms message --id`), keepalive, signály zo Stop; zvonček iba pri presnej zhode celého promptu; bez ničoho nového prázdny kontext. Záznam ťahu `turn open`, `turn.opened_at` do stavu vlákna (P-043) |
+| `pre-tool-use.mjs` | PreToolUse (Write, Edit, MultiEdit, NotebookEdit, Bash, PowerShell) | P-013, P-018, P-025, P-031, P-055, P-057 | deny/ask alebo (c) 1 riadok; v subagentovi pustí z pošty iba čítanie |
+| `post-tool-use.mjs` | PostToolUse (všetky nástroje), PostToolUseFailure | P-030, P-028, P-041, P-042 | buffer `<brain>/local/log-buffer/` (iba Bash, PowerShell, zlyhania); watch: po nástroji raz oznámi čakajúci `blocker` alebo `steer` (riadok `mail waiting: <id> <úroveň>`), najviac raz za 15 s, bez oznamu pri výpadku pošty; subagenty sa nesledujú |
+| `stop.mjs` | Stop | P-026, P-030, P-040, P-042, P-043 | záznam ťahu `turn closed` s `opened_at`, logy jedným commitom, signály (`unpushed`, `conflict`, návrh skillu raz za vlákno, `picked assist unanswered`) do ďalšieho promptu; blokuje iba nedokončený krok handoveru (P-026) |
+| `subagent-stop.mjs` | SubagentStop | P-028 | blokovanie, ak pracovníkovi chýba sekcia „Failures“ (triážny subagent bol odstránený 2026-11-02) |

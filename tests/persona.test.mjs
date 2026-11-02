@@ -1,0 +1,156 @@
+// P-024 persona (repository = brain, "brain": "."), P-052 work files in scratch/.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { PLUGIN_ROOT, cleanEnv, setup } from './helpers.mjs';
+import { resolveBrain, ensureWorkflowConfig, expandBrainPath, BRAIN_ENTRIES } from '../scripts/config.mjs';
+
+function git(cwd, ...args) {
+  const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
+  if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`);
+  return r.stdout.trim();
+}
+
+function persona() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-persona-'));
+  const origin = path.join(root, 'origin.git');
+  git(root, 'init', '-q', '--bare', '-b', 'main', origin);
+  const dir = path.join(root, 'bob');
+  const env = cleanEnv({ WORKFLOW_THREAD_ID: 'p1' });
+  const run = (bin, args, cwd = dir) => {
+    const r = spawnSync(process.execPath, [path.join(PLUGIN_ROOT, 'bin', bin), ...args], { cwd, env, encoding: 'utf8' });
+    return { status: r.status, out: (r.stdout || '') + (r.stderr || '') };
+  };
+  let r = run('brain-init.mjs', [dir, '--remote', origin], root);
+  if (r.status !== 0) throw new Error(r.out);
+  git(dir, 'config', 'user.name', 't'); git(dir, 'config', 'user.email', 't@t');
+  const hook = (input) => {
+    const res = spawnSync(process.execPath, [path.join(PLUGIN_ROOT, 'hooks', 'pre-tool-use.mjs')], { cwd: dir, env: { ...env, CLAUDE_PROJECT_DIR: dir }, encoding: 'utf8', input: JSON.stringify({ session_id: 's1', cwd: dir, ...input }) });
+    return JSON.parse(res.stdout.trim() || '{}');
+  };
+  return { root, origin, dir, run, hook, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
+}
+
+test('persona: "." resolves to the main checkout, also from a worktree; other config keys survive', () => {
+  const p = persona();
+  try {
+    fs.writeFileSync(path.join(p.dir, '.workflow.json'), JSON.stringify({ brain: '.', comms: { instance: 'prod' } }));
+    const info = resolveBrain(p.dir);
+    assert.equal(info.persona, true);
+    assert.equal(info.brain, fs.realpathSync(p.dir));
+    const wt = path.join(p.root, 'wt');
+    git(p.dir, 'worktree', 'add', '-q', wt);
+    fs.writeFileSync(path.join(wt, '.workflow.json'), JSON.stringify({ brain: '.' }));
+    assert.equal(resolveBrain(wt).brain, fs.realpathSync(p.dir), 'a worktree never becomes a second brain');
+    ensureWorkflowConfig(p.dir, '.');
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(p.dir, '.workflow.json'), 'utf8')), { brain: '.', comms: { instance: 'prod' } });
+  } finally { p.cleanup(); }
+});
+
+test('persona: deny patterns cover the template entries; a normal project keeps <brainRel>/**', () => {
+  assert.deepEqual(expandBrainPath('<brain>/**', '.'), BRAIN_ENTRIES);
+  assert.ok(!BRAIN_ENTRIES.some((e) => e.startsWith('scratch') || e.startsWith('local')));
+  assert.deepEqual(expandBrainPath('<brain>/**', '../x-brain'), ['../x-brain/**']);
+  assert.deepEqual(expandBrainPath('~/.claude/**', '.'), ['~/.claude/**']);
+});
+
+test('persona: adapter writes settings, scratch/ and commits generated files through the brain script', () => {
+  const p = persona();
+  try {
+    const r = p.run('adapter.mjs', ['claude-code', '--brain', '.']);
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.out, /persona: generated files committed/);
+    assert.equal(git(p.dir, 'status', '--porcelain'), '', 'nothing left uncommitted');
+    const msg = git(p.dir, 'log', '-1', '--format=%s');
+    assert.match(msg, /^\[brain-script\] adapter/);
+    const settings = JSON.parse(fs.readFileSync(path.join(p.dir, '.claude', 'settings.json'), 'utf8'));
+    assert.ok(settings.permissions.deny.includes('Edit(memory/**)'));
+    assert.ok(!settings.permissions.deny.some((d) => d.includes('scratch')));
+    assert.ok(fs.existsSync(path.join(p.dir, 'scratch')));
+    assert.match(fs.readFileSync(path.join(p.dir, '.gitignore'), 'utf8'), /^scratch\/$/m);
+    assert.equal(git(p.origin, 'log', '-1', '--format=%s', 'main'), msg, 'pushed');
+  } finally { p.cleanup(); }
+});
+
+test('persona: brain files denied, scratch/ writable, README is not project data', () => {
+  const p = persona();
+  try {
+    assert.equal(p.run('adapter.mjs', ['claude-code', '--brain', '.']).status, 0);
+    let out = p.hook({ tool_name: 'Write', tool_input: { file_path: path.join(p.dir, 'memory', 'x.md'), content: 'x' } });
+    assert.equal(out.hookSpecificOutput.permissionDecision, 'deny');
+    out = p.hook({ tool_name: 'Write', tool_input: { file_path: path.join(p.dir, 'notes.md'), content: 'x' } });
+    assert.equal(out.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(out.hookSpecificOutput.permissionDecisionReason, /managed projects \(P-024\)/);
+    out = p.hook({ tool_name: 'Write', tool_input: { file_path: path.join(p.dir, 'scratch', 'try.txt'), content: 'x' } });
+    assert.deepEqual(out, {});
+    fs.writeFileSync(path.join(p.dir, 'scratch', 'try.txt'), 'old\n');
+    out = p.hook({ tool_name: 'Write', tool_input: { file_path: path.join(p.dir, 'scratch', 'try.txt'), content: 'new' } });
+    assert.deepEqual(out, {}, 'scratch content is disposable, no P-018 confirmation');
+    out = p.hook({ tool_name: 'Bash', tool_input: { command: `echo x > ${path.join(p.dir, 'scratch', 'b.txt')}` } });
+    assert.deepEqual(out, {});
+    // Stray untracked output in the persona root is not brain data: removing it is P-018 (ask), not a P-013 deny.
+    fs.writeFileSync(path.join(p.dir, '0'), 'x\n');
+    out = p.hook({ tool_name: 'Bash', tool_input: { command: 'rm 0' } });
+    assert.equal(out.hookSpecificOutput.permissionDecision, 'ask', JSON.stringify(out));
+    assert.match(out.hookSpecificOutput.permissionDecisionReason, /not recoverable from git: 0/);
+    out = p.hook({ tool_name: 'Bash', tool_input: { command: `rm ${path.join(p.dir, 'memory', 'x.md')}` } });
+    assert.equal(out.hookSpecificOutput.permissionDecision, 'deny', 'brain data still denied');
+  } finally { p.cleanup(); }
+});
+
+test('P-052: write outside the project asks; topic copies next to the project pass', () => {
+  const fx = setup();
+  try {
+    let r = fx.hook('pre-tool-use.mjs', { tool_name: 'Write', tool_input: { file_path: path.join(fx.root, 'elsewhere.txt'), content: 'x' } });
+    assert.equal(r.json.hookSpecificOutput.permissionDecision, 'ask');
+    assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /outside the project; work files go to \/.+\/scratch\/ \(gitignored, free to write without asking.*P-052\)/);
+    r = fx.hook('pre-tool-use.mjs', { tool_name: 'Write', tool_input: { file_path: path.join(os.tmpdir(), 'claude-x', 'scratchpad', 'a.txt'), content: 'x' } });
+    assert.equal(r.json.hookSpecificOutput.permissionDecision, 'ask');
+    r = fx.hook('pre-tool-use.mjs', { tool_name: 'Write', tool_input: { file_path: path.join(fx.root, 'project-topics', 't1', 'new.js'), content: 'x' } });
+    assert.notEqual(r.json.hookSpecificOutput?.permissionDecision, 'ask');
+    r = fx.hook('pre-tool-use.mjs', { tool_name: 'Write', tool_input: { file_path: path.join(fx.project, 'scratch', 'a.txt'), content: 'x' } });
+    assert.deepEqual(r.json, {});
+  } finally { fx.cleanup(); }
+});
+
+test('P-052: a temp-dir target is denied with the scratch path (no operator question); a hand-made worker brief is denied', () => {
+  const fx = setup();
+  try {
+    const tmp = { env: { WORKFLOW_TEMP_DIRS: fx.root } };
+    let r = fx.hook('pre-tool-use.mjs', { tool_name: 'Write', tool_input: { file_path: path.join(fx.root, 'subagent', 'p8.py'), content: 'x' } }, tmp);
+    assert.equal(r.json.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /system temp dir; write work files to \/.+\/scratch\/ instead/);
+    r = fx.hook('pre-tool-use.mjs', { tool_name: 'Write', tool_input: { file_path: path.join(fx.project, 'scratch', 'p8.py'), content: 'x' } }, tmp);
+    assert.deepEqual(r.json, {}, 'scratch in the project passes');
+    r = fx.hook('pre-tool-use.mjs', { tool_name: 'Agent', tool_input: { subagent_type: 'workflow:worker', description: 'x', prompt: 'Implement it; put patches anywhere.' } });
+    assert.equal(r.json.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /delegate\.mjs prepare/);
+    const brief = fx.run('delegate.mjs', ['prepare', '--task', 'Implement it']);
+    assert.equal(brief.status, 0, brief.out);
+    r = fx.hook('pre-tool-use.mjs', { tool_name: 'Agent', tool_input: { subagent_type: 'workflow:worker', description: 'x', prompt: brief.stdout } });
+    assert.notEqual(r.json.hookSpecificOutput?.permissionDecision, 'deny', 'brief from prepare passes');
+    r = fx.hook('pre-tool-use.mjs', { tool_name: 'Agent', tool_input: { subagent_type: 'Explore', description: 'x', prompt: 'find x' } });
+    assert.notEqual(r.json.hookSpecificOutput?.permissionDecision, 'deny', 'other agents pass');
+  } finally { fx.cleanup(); }
+});
+
+test('persona: writes into a managed sibling project and its topic copies pass; other places outside ask', () => {
+  const p = persona();
+  try {
+    assert.equal(p.run('adapter.mjs', ['claude-code', '--brain', '.']).status, 0);
+    const managed = path.join(p.root, 'srv');
+    fs.mkdirSync(managed); fs.writeFileSync(path.join(managed, '.workflow.json'), '{"brain":"../srv-brain"}');
+    git(managed, 'init', '-q');
+    let out = p.hook({ tool_name: 'Write', tool_input: { file_path: path.join(managed, 'new.sh'), content: 'x' } });
+    assert.notEqual(out.hookSpecificOutput?.permissionDecision, 'ask');
+    out = p.hook({ tool_name: 'Write', tool_input: { file_path: path.join(p.root, 'srv-topics', 't1', 'new.sh'), content: 'x' } });
+    assert.notEqual(out.hookSpecificOutput?.permissionDecision, 'ask');
+    out = p.hook({ tool_name: 'Write', tool_input: { file_path: path.join(p.root, 'plain', 'x.txt'), content: 'x' } });
+    assert.equal(out.hookSpecificOutput.permissionDecision, 'ask');
+    out = p.hook({ tool_name: 'Bash', tool_input: { command: `cd ${managed} && echo x > notes.txt` } });
+    assert.deepEqual(out, {}, 'cd into the managed project: the relative target is not in the persona brain');
+  } finally { p.cleanup(); }
+});

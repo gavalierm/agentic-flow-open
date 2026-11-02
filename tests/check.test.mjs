@@ -1,0 +1,50 @@
+// Suspected malfunction: compare loaded and installed workflow version.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { setup } from './helpers.mjs';
+import { shortSha, PLUGIN_ROOT } from '../scripts/util.mjs';
+
+test('same version asks for a report; older loaded version prints the current rules', () => {
+  const fx = setup();
+  try {
+    const sha = shortSha(PLUGIN_ROOT);
+    const same = fx.run('check.mjs', ['--loaded', sha]);
+    assert.equal(same.status, 0, same.out);
+    assert.match(same.stdout, /up to date: .*--to maintainer\/workflow-dev /);
+    const older = fx.run('check.mjs', ['--loaded', '0000000']);
+    assert.equal(older.status, 0, older.out);
+    assert.match(older.stdout, /newer workflow installed/);
+    assert.match(older.stdout, /## |P-0/);
+    assert.notEqual(fx.run('check.mjs', []).status, 0);
+  } finally {
+    fx.cleanup?.();
+  }
+});
+
+test('updateClone: a release install moves to the newest release tag; a branch or dirty clone stays', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { git } = await import('../scripts/util.mjs');
+  const { updateClone } = await import('../scripts/update.mjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-update-'));
+  const env = { GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
+  const g = (cwd, ...a) => { const r = git(a, { cwd, env }); assert.ok(r.ok, r.stderr); return r.stdout; };
+  try {
+    const origin = path.join(dir, 'origin');
+    fs.mkdirSync(origin);
+    g(origin, 'init', '-q', '-b', 'main');
+    for (const v of ['v0.2.0', 'v0.10.0', 'v0.9.1']) { g(origin, 'commit', '-q', '--allow-empty', '-m', v); g(origin, 'tag', v); }
+    const clone = path.join(dir, 'clone');
+    g(dir, 'clone', '-q', origin, clone);
+    g(clone, 'checkout', '-q', 'v0.2.0');
+    assert.deepEqual(updateClone(clone), { status: 'updated', from: 'v0.2.0', to: 'v0.10.0' }, 'semver, not text order');
+    assert.equal(updateClone(clone).status, 'current');
+    g(clone, 'checkout', '-q', 'v0.2.0');
+    fs.writeFileSync(path.join(clone, 'x'), 'local');
+    assert.equal(updateClone(clone).status, 'skipped', 'local changes');
+    fs.rmSync(path.join(clone, 'x'));
+    g(clone, 'checkout', '-q', 'main');
+    assert.equal(updateClone(clone).status, 'skipped', 'a branch (dev clone) is not switched');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

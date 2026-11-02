@@ -1,0 +1,5 @@
+{
+  "name": "workflow",
+  "description": "Agentic workflow: rules, base skills, hooks and brain scripts. Enabled per project via enabledPlugins.",
+  "defaultEnabled": false
+}
