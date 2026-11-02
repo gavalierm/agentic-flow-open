@@ -59,7 +59,7 @@ test('P-048: manifest name workflow, defaultEnabled false, no version field', ()
 test('P-049: file and directory names are ascii, lowercase (README/SKILL/PLAN/PRINCIPLES allowed), no spaces', () => {
   const bad = allFiles.map((f) => path.relative(PLUGIN_ROOT, f)).filter((rel) => {
     const base = path.basename(rel);
-    if (/^(README|SKILL|PLAN|PRINCIPLES|CLAUDE)\.md$/.test(base)) return false;
+    if (/^((README|SKILL|PLAN|PRINCIPLES|CLAUDE|SNAPSHOT)\.md|LICENSE)$/.test(base)) return false;
     return /[^\x00-\x7F]/.test(rel) || /\s/.test(rel) || /[A-Z]/.test(rel.replace(/\/(README|SKILL)\.md$/, ''));
   });
   assert.deepEqual(bad, []);
