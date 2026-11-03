@@ -159,14 +159,17 @@ test('send needs a level (a reply excepted); info is refused with the valid leve
   }
 });
 
-// P-042, P-047: a steer stops the work by its level; the skill must not lead the recipient to ask the operator whether to
-// continue (pilot 2026-11-02: a thread in auto mode asked "continue despite steer?" and waited for a human).
-test('comms skill: steer stops work on the topic without a question to the operator', () => {
+// P-042, P-057: a steer adjusts the work and the thread continues; no message stops the work (operator 2026-11-03:
+// a steer stopped a thread and the threads waited for each other).
+test('comms skill: steer adjusts the work and continues, without a question to the operator; no level ends the turn', () => {
   const skill = fs.readFileSync(path.join(import.meta.dirname, '..', 'skills', 'comms', 'SKILL.md'), 'utf8');
   const line = skill.split('\n').find((l) => l.trim().startsWith('- `steer`:'));
   assert.ok(line, 'steer handling line');
-  assert.match(line, /zastav prácu/);
+  assert.match(line, /uprav/);
+  assert.match(line, /pokračuj/);
+  assert.match(line, /nikdy nezastaví/);
   assert.match(line, /nepýtaj/);
-  assert.match(line, /ukonči ťah/);
+  assert.doesNotMatch(line, /ukonči ťah/);
   assert.match(line, /P-047/);
+  assert.doesNotMatch(skill, /pošli a ukonči ťah/);
 });

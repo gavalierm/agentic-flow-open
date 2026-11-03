@@ -17,7 +17,7 @@ test('unit of work: verification required, logs written, handover free, repeats 
       r = fx.run('finish.mjs', ['--verified', 'saw output', '--procedures', 'deploy-web-docker', '--derivations', 'deploy-flow']);
       assert.equal(r.status, 0, r.out);
     }
-    assert.match(r.stdout, /procedure deploy-web-docker 3x: propose a skill/);
+    assert.match(r.stdout, /procedure deploy-web-docker 3x: create the skill yourself, no operator approval/);
     assert.match(r.stdout, /derivation deploy-flow 3x: save the conclusion/);
     assert.equal(fx.read('logs/procedures.log').trim().split('\n').length, 3);
     assert.match(fx.read('topics/d1/handover.md'), /\(voľná\)/);

@@ -11,6 +11,43 @@ Stav: M1–M3 hotové (brain, témy, štart, stavový riadok, hooky, skilly `sav
 - **Projekt** je tvoje repo. Workflow sa v ňom zapne dvoma malými súbormi (`.claude/settings.json`, `.workflow.json`).
 - **Pošta a budenie** (správy medzi agentmi) sú samostatný repozitár `agentic-comms`; na základnú prácu nie sú potrebné. Workflow ju použije, keď ju nájde (pozri „Pošta“).
 
+## Ako to funguje (v kocke)
+
+```mermaid
+flowchart TB
+  OP["<b>Operátor</b><br/>zadá úlohu slovami, rozhoduje iba to,<br/>čo agent rozhodnúť nesmie"]
+
+  subgraph PA["Projekt A (priečinok)"]
+    direction LR
+    BA[("Brain (git)<br/>pamäť projektu")]
+    DA[("Projekt (git)<br/>súbory a dáta")]
+  end
+  subgraph PB["Projekt B (priečinok)"]
+    direction LR
+    BB[("Brain (git)<br/>pamäť projektu")]
+    DB[("Projekt (git)<br/>súbory a dáta")]
+  end
+
+  subgraph AG["Agent pracuje na jednej úlohe (téme) v jednom projekte"]
+    direction LR
+    S1["1. Načíta brain<br/>pravidlá, rozhodnutia,<br/>kde minule skončil"] --> S2["2. Pracuje v projekte<br/>mení súbory a dáta,<br/>hľadanie dá pomocníkom"] --> S3["3. Zapíše do brainu<br/>čo urobil, čo ďalej,<br/>čo sa naučil"]
+  end
+
+  OP --> AG
+  BA -. číta .-> S1
+  S2 -. mení .-> DA
+  S3 -. zapisuje .-> BA
+```
+
+- **Priečinok** je obyčajný obal a nič si nepamätá. **Git** sú súbory s celou históriou zmien a zálohou. Každý projekt je priečinok s dvoma oddelenými repami vedľa seba: brain (pamäť) a samotný projekt (súbory a dáta).
+- **Pošta:** agenti si posielajú úlohy medzi sebou. **Budík:** zobudí agenta, keď má pokračovať. **Strážcovia (hooky):** kontrolujú každú odpoveď, aby agent nečakal bez budíka a nepýtal sa zbytočne.
+
+```mermaid
+flowchart LR
+  E["<b>Chyba</b><br/>niečo zlyhá alebo operátor<br/>povie „to je zle“"] --> K["<b>Skill</b><br/>agent zapíše do brainu návod:<br/>„v tejto situácii rob toto, nie tamto“"] --> N["<b>Automaticky nabudúce</b><br/>v podobnej situácii sa návod<br/>agentovi načíta sám"]
+  K -. platí všade .-> R["<b>Spoločné pravidlá</b><br/>novú verziu dostanú všetci<br/>agenti vo všetkých projektoch"]
+```
+
 ## Predpoklady
 
 - **git**
@@ -63,7 +100,7 @@ Overenie: v ľubovoľnom projekte spusti `claude` a napíš `/plugins`. V zoznam
    }
    ```
 
-2. V koreni projektu vytvor `.workflow.json` s relatívnou cestou k brain (vždy s `/`, nikdy absolútna cesta):
+2. Brain je voliteľný (P-024): projekt, ktorý spravuje persona, vlastný brain nemá (témy a pamäť sú v brain persony) a krok 2–3 vynechá. Vlastný brain iba na pokyn operátora: v koreni projektu vytvor `.workflow.json` s relatívnou cestou k brain (vždy s `/`, nikdy absolútna cesta):
 
    ```json
    { "brain": "../<nazov-brain>" }
@@ -71,16 +108,16 @@ Overenie: v ľubovoľnom projekte spusti `claude` a napíš `/plugins`. V zoznam
 
    Ak brain na tomto stroji leží inde, zapíš cestu do `local/workflow.json` (rovnaký formát; `local/` je v `.gitignore`). Ten má prednosť.
 
-3. Ak brain ešte neexistuje, založ ho: `node ~/.claude/skills/workflow/bin/brain-init.mjs ../<nazov-brain> --project . [--remote <adresa-repa-brain>]`. Existujúci klon brain aktivuj: `node ~/.claude/skills/workflow/bin/brain-init.mjs ../<nazov-brain> --attach --project .` (nastaví `core.hooksPath`, vytvorí `local/`).
-4. Oba súbory commitni do projektu. Spusti `claude` v projekte; pri štarte sa má zobraziť riadok `workflow <sha>`.
+3. Ak taký brain ešte neexistuje, založ ho: `node ~/.claude/skills/workflow/bin/brain-init.mjs ../<nazov-brain> --project . [--remote <adresa-repa-brain>]`. Existujúci klon brain aktivuj: `node ~/.claude/skills/workflow/bin/brain-init.mjs ../<nazov-brain> --attach --project .` (nastaví `core.hooksPath`, vytvorí `local/`).
+4. Súbory commitni do projektu. Spusti `claude` v projekte; pri štarte sa má zobraziť riadok `workflow <sha>`.
 
-Oba súbory generuje adaptér: `node ~/.claude/skills/workflow/bin/adapter.mjs claude-code` (spusti v koreni projektu). Vytvorí `.claude/settings.json` (`enabledPlugins`, `permissions.deny/ask`, `autoMemoryEnabled: false`, `autoCompactWindow`), `.workflow.json` ak chýba, zapíše `.claude/skills/`, `local/` a `scratch/` do `.gitignore`, vytvorí `scratch/` (pracovné súbory agenta, P-052) a skopíruje skilly brain do `.claude/skills/`. Generované súbory neupravuj, ďalšie generovanie ich prepíše.
+Oba súbory generuje adaptér: `node ~/.claude/skills/workflow/bin/adapter.mjs claude-code` (spusti v koreni projektu; cieľ je priečinok, v ktorom beží, alebo `--project`, nie projekt session (`CLAUDE_PROJECT_DIR`, `WORKFLOW_PROJECT_DIR`), takže persona ho môže spustiť v spravovanom projekte). Vytvorí `.claude/settings.json` (`enabledPlugins`, `permissions.deny/ask`, `autoMemoryEnabled: false`, `autoCompactWindow`), `.workflow.json` iba s `--brain ../<nazov-brain>` (bez neho projekt brain nemá), zapíše `.claude/skills/`, `local/` a `scratch/` do `.gitignore`, vytvorí `scratch/` (pracovné súbory agenta, P-052) a skopíruje skilly brain do `.claude/skills/`. Generované súbory neupravuj, ďalšie generovanie ich prepíše.
 
 ### Persona (jedno repo)
 
 Persona je projekt, ktorého repo je zároveň brain (P-024): `.workflow.json` má `"brain": "."`. Persona nemá vlastné dáta projektu; dokumenty a výstupy idú do spravovaných projektov.
 
-1. Nová persona: `node ~/.claude/skills/workflow/bin/brain-init.mjs ../<persona> --remote <adresa-repa>`; existujúce repo persony: `brain-init.mjs . --attach`.
+1. Nová persona: `node ~/.claude/skills/workflow/bin/persona-create.mjs <meno>` (krátke meno, napr. `bob`); skript sám odvodí repo `agent-<meno>`, overí, že neexistuje (ak existuje, skončí chybou, náhradné meno nepoužije), založí súkromné repo a brain v `~/agentic/agent-<meno>`. Nie ručné `brain-init` ani ručné založenie repa, lebo prefix `agent-` by sa dal obísť. Existujúce repo persony: `brain-init.mjs . --attach`.
 2. V repe persony: `node ~/.claude/skills/workflow/bin/adapter.mjs claude-code --brain .`. Adaptér vygenerované súbory (`.workflow.json`, `.claude/settings.json`, `.gitignore`) sám commitne cez skript brain a pushne.
 3. Agent v persone priamo zapisuje iba do `scratch/` a `local/`; všetko ostatné ide cez `save`, `topic`, `finish`. Worktree persony používa brain hlavného checkoutu.
 
@@ -88,9 +125,9 @@ Persona je projekt, ktorého repo je zároveň brain (P-024): `.workflow.json` m
 
 Spusti `claude` v koreni projektu a povedz:
 
-> Zapni v tomto projekte workflow. Brain je `../<nazov-brain>`; ak neexistuje, navrhni jeho založenie.
+> Zapni v tomto projekte workflow. (Voliteľne: Brain je `../<nazov-brain>`; ak neexistuje, založ ho.)
 
-Agent urobí iba toto: spustí adaptér (`node ~/.claude/skills/workflow/bin/adapter.mjs claude-code`), ktorý vytvorí `.claude/settings.json` a `.workflow.json`; ak brain na ceste nenájde, navrhne `brain-init` a počká na tvoj súhlas; nakoniec oznámi, ktoré súbory vznikli. Commit urobí až na tvoj pokyn („commitni to“). Ak Claude Code zobrazí otázku o dôvere priečinku alebo hookom, potvrď ju; bez dôvery niektoré nastavenia projektu neplatia.
+Agent urobí iba toto: spustí adaptér (`node ~/.claude/skills/workflow/bin/adapter.mjs claude-code`, s brain `--brain ../<nazov-brain>`), ktorý vytvorí `.claude/settings.json` (a s brain `.workflow.json`); bez pokynu brain nezakladá ani nenavrhuje; s brain, ktorý na ceste chýba, navrhne `brain-init` a počká na tvoj súhlas; nakoniec oznámi, ktoré súbory vznikli. Commit urobí až na tvoj pokyn („commitni to“). Ak Claude Code zobrazí otázku o dôvere priečinku alebo hookom, potvrď ju; bez dôvery niektoré nastavenia projektu neplatia.
 
 Potom ukonči session a spusti `claude` znova, aby sa plugin načítal.
 

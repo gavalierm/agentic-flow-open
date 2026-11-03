@@ -50,7 +50,10 @@ switch (cmd) {
     print({ acked });
     break;
   }
-  case 'send': print({ id: 'm-sent', state: 'pending', expires_at: opt('ttl') ? '2026-11-01T12:30:00.000Z' : null }); break;
+  case 'send':
+    if (state.send_no_path && argv.includes('--reply-to')) { process.stderr.write(JSON.stringify({ error: 'na pôvodnú správu sa nedá odpovedať: nemá vlákno ani zdrojovú tému', code: 'ERROR', status: 400 }) + '\n'); process.exit(1); }
+    if (state.send_closed && argv.includes('--reply-to')) { process.stderr.write(JSON.stringify({ error: 'odosielateľ pôvodnej správy už tému uzavrel: project/gone uzavretá 2026-11-02T21:39:48.512Z', code: 'ERROR', status: 410, details: { closed_at: '2026-11-02T21:39:48.512Z' } }) + '\n'); process.exit(1); }
+    print({ id: 'm-sent', state: 'pending', expires_at: opt('ttl') ? '2026-11-01T12:30:00.000Z' : null }); break;
   case 'turn':
     if (state.turn === 'unknown') { process.stderr.write('unknown command: turn\n'); process.exit(1); }
     if (state.turn === 'old') {

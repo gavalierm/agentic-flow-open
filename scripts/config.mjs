@@ -27,7 +27,9 @@ export const PERSONA_BRAIN = '.';
 export const BRAIN_ENTRIES = ['memory/**', 'decisions/**', 'rules/**', 'skills/**', 'topics/**', 'exceptions/**', 'logs/**', 'policy.json', '.githooks/**', '.gitattributes', '.gitignore', '.workflow.json', 'README.md'];
 // P-052: work files of the agent; P-018: operator's local files. Writable in a persona.
 export const SCRATCH_DIR = 'scratch';
-export const PERSONA_WRITABLE = [SCRATCH_DIR, 'local'];
+// docs/: lasting documents of a persona (research, reports); written directly, committed by save.mjs docs (alice 2026-11-03).
+export const PERSONA_DOCS = 'docs';
+export const PERSONA_WRITABLE = [SCRATCH_DIR, 'local', PERSONA_DOCS];
 
 /** Main checkout of the repository containing dir (never a worktree), P-024 persona. */
 export function mainCheckout(dir) {
@@ -40,6 +42,7 @@ export function mainCheckout(dir) {
 /** Brain deny patterns for harness settings: `<brain>/x` -> `<brainRel>/x`; in a persona the template entries (P-024). */
 export function expandBrainPath(p, brainRel) {
   if (!p.startsWith('<brain>')) return [p];
+  if (!brainRel) return [];
   if (brainRel === PERSONA_BRAIN) return p === '<brain>/**' ? [...BRAIN_ENTRIES] : [p.slice('<brain>/'.length)];
   return [`${brainRel}${p.slice('<brain>'.length)}`];
 }
@@ -57,6 +60,17 @@ export function brainScriptEnv() {
 }
 
 /** Project root: explicit, CLAUDE_PROJECT_DIR, git toplevel of cwd, or cwd. */
+/**
+ * Target project of a command that generates the project's own files (adapter): --project, else the directory it runs in.
+ * Neither CLAUDE_PROJECT_DIR nor WORKFLOW_PROJECT_DIR: SessionStart exports the session's project into every Bash command
+ * (exportProjectDir), so a persona session editing another project would regenerate the persona (alice 2026-11-03: adapter
+ * run in agentic-flow targeted alice). Brain commands keep resolveProject (they write to the persona's brain).
+ */
+export function resolveTargetProject(explicit) {
+  if (explicit) return path.resolve(explicit);
+  return gitToplevel(process.cwd()) || process.cwd();
+}
+
 export function resolveProject(explicit) {
   if (explicit) return path.resolve(explicit);
   if (process.env.WORKFLOW_PROJECT_DIR) return path.resolve(process.env.WORKFLOW_PROJECT_DIR);
@@ -89,11 +103,15 @@ export function resolveBrain(projectDir) {
 }
 
 /** Ensure <project>/.workflow.json exists with a relative brain path (P-024). Returns { brainInfo, written }. */
+export const NO_BRAIN_NOTE = `no brain: project without its own brain (optional, P-024); topics and memory stay in the brain of the persona that manages it. Create one only on the operator's instruction: adapter.mjs <harness> --brain ../<name>, then brain-init.mjs ../<name> --project .`;
+
+// A brain is optional (P-024): without --brain and without a configured one nothing is written and brainInfo is null
+// (a project managed from a persona keeps its topics and memory in the persona's brain).
 export function ensureWorkflowConfig(projectDir, brainRelArg = null) {
   let brainInfo = resolveBrain(projectDir);
   let written = false;
-  if (!brainInfo || brainInfo.error || brainRelArg) {
-    const rel = (brainRelArg || brainInfo?.brainRel || `../${path.basename(projectDir)}-brain`).replace(/\\/g, '/');
+  if (brainRelArg || brainInfo?.error) {
+    const rel = (brainRelArg || brainInfo.brainRel).replace(/\\/g, '/');
     if (path.isAbsolute(rel) || /^[A-Za-z]:\//.test(rel)) throw new Error('brain path must be relative to the project root (P-024)');
     // Other keys (comms) are kept; only brain is set.
     const current = readJson(path.join(projectDir, WORKFLOW_CONFIG), {});
@@ -174,7 +192,7 @@ export function loadContext({ project, requireBrain = true } = {}) {
   const ok = brainExists(brainDir);
   if (requireBrain && !ok) {
     const reason = !brainInfo
-      ? `missing ${WORKFLOW_CONFIG} in ${projectDir}`
+      ? `no brain configured for ${projectDir} (${WORKFLOW_CONFIG} without brain; optional, P-024)`
       : brainInfo.error || `brain not found at ${brainInfo.brainRel}`;
     throw new Error(`brain unavailable: ${reason}`);
   }

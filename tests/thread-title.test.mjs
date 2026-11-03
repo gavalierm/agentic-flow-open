@@ -35,6 +35,16 @@ test('title changed by hand, main threads, outside T3, title already right, T3 u
   assert.deepEqual(threadTitleSignal(ctx, held('work'), {}, { read: () => null, env }), { line: null, patch: { title_topic: 'work' } });
 });
 
+test('two held work topics: no rename (alphabetical first is arbitrary); one left again: rename to it', () => {
+  // alice 2026-11-03: the thread held workflow-dev and carol-v2 and was told to rename to carol-v2.
+  const r = reader('workflow-dev');
+  const st = { title_topic: 'workflow-dev', auto_title: 'workflow-dev' };
+  assert.equal(threadTitleSignal(ctx, held('carol-v2', 'workflow-dev'), st, { read: r.read, env }), null);
+  assert.equal(r.calls.length, 0);
+  assert.equal(threadTitleSignal(ctx, held('workflow-dev'), st, { read: r.read, env }), null, 'title already follows the remaining topic');
+  assert.match(threadTitleSignal(ctx, held('carol-v2'), st, { read: r.read, env }).line, /rename this thread to "carol-v2"/);
+});
+
 test('readThreadTitle: thread id appended to the command, JSON title, failure → null', () => {
   let argv;
   const ok = (cmd, args) => { argv = [cmd, ...args]; return { status: 0, stdout: JSON.stringify({ thread: { title: 'T' } }) }; };

@@ -3,13 +3,15 @@
 // The agent classifies; this script only writes in a fixed format, deduplicates via find, commits via brain.mjs, regenerates indexes.
 //   save.mjs memory <type> <name> --content "..." [--origin operator|derived|observed] [--aliases a,b] [--relates-to x,y] [--sources f1,f2] [--summary "..."] [--new]
 //   save.mjs decision "<title>" --what "..." --alternatives "..." --reason "..." --relates-to x,y [--supersedes D-0001]
-//   save.mjs rule <name> --content "..." [--title "..."] | --remove --reason "..."
+//   save.mjs rule <name> --content "..." (--enforced-by <file>[:<symbol>][,...] | --unenforced "<why code cannot check it>") [--title "..."] | --remove --reason "..."
 //   save.mjs exception P-XXX --wording "..." --reason "..." [--layer project|harness|machine|local] [--title "..."]
 //   save.mjs skill <name> --description "..." --content "..." --origin error|routine [--aliases a,b] [--script <file>[,<file>]] [--replace | --sed 's/<pattern>/<replacement>/[gim]'] [--from-procedure <name>] [--from-sequence <seq>]
 //   save.mjs handover <topic> (--task ".." --done "a; b" --next ".." --files "a; b" --questions "a; b" | --file <path>)
+//   save.mjs docs [--message "..."]   persona only: commits the files written directly into docs/ (P-024)
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { parseArgs, fail, today, readText } from '../scripts/util.mjs';
 import { loadContext, isWakeTurn, machineName } from '../scripts/config.mjs';
 import { brainWrite, formatWriteResult, syncAndCheckHolder } from '../scripts/brain.mjs';
@@ -18,6 +20,7 @@ import { makeKey, normalizeKey, hasDiacritics, isValidId, KEY_TYPES } from '../s
 import { find, findSimilar } from '../scripts/find.mjs';
 import { readDecisions, readSkills, nextDecisionId } from '../scripts/records.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
+import { ruleCorpus, judgeRule, unanswered, onlyCondenses } from '../scripts/rule-gate.mjs';
 import { buildIndexes } from '../scripts/index.mjs';
 import { renderHandover, checkHandover } from '../scripts/brain-checks.mjs';
 import { removeNames } from '../scripts/logs.mjs';
@@ -129,6 +132,58 @@ function procedureSignal(content) {
   return null;
 }
 
+/**
+ * A rule only in text is unreliable (operator 2026-11-02: "rules are unreliable, solve it in code"): every saved rule names
+ * the code that enforces it (hook, script, test) or states why code cannot check it. `<file>[:<symbol>]` resolves against
+ * the workflow, the project and brain; the symbol must occur in the file. Returns frontmatter fields or fails.
+ */
+function enforcementOf(ctx, existing, opts = args) {
+  const given = opts['enforced-by'] !== undefined && opts['enforced-by'] !== true;
+  const why = opts.unenforced !== undefined && opts.unenforced !== true ? String(opts.unenforced).trim() : null;
+  if (given && why) fail('--enforced-by and --unenforced exclude each other');
+  if (!given && !why) {
+    if (existing.enforced_by?.length) return { enforced_by: existing.enforced_by };
+    if (existing.unenforced) return { unenforced: existing.unenforced };
+    fail('a rule needs --enforced-by <file>[:<symbol>] (the hook, script or test that blocks the violation; write that code first, skill fix) or --unenforced "<why code cannot check it>"; a rule only in text is not reliable (operator 2026-11-02)');
+  }
+  if (why) {
+    if (why.length < 20) fail('--unenforced needs the reason why code cannot check the rule (at least 20 characters)');
+    return { unenforced: why };
+  }
+  const refs = asList(opts['enforced-by']);
+  const roots = [ctx.pluginRoot, ctx.projectDir, ctx.brainDir].filter(Boolean);
+  for (const ref of refs) {
+    const [file, symbol] = ref.split(':');
+    const abs = roots.map((r) => path.resolve(r, file)).find((f) => fs.existsSync(f) && fs.statSync(f).isFile());
+    if (!abs) fail(`--enforced-by ${ref}: file ${file} not found in the workflow, the project or brain`);
+    if (symbol && !fs.readFileSync(abs, 'utf8').includes(symbol)) fail(`--enforced-by ${ref}: ${symbol} does not occur in ${file}`);
+  }
+  return { enforced_by: refs };
+}
+
+/**
+ * New rule gate (operator 2026-11-03: rules multiply without end, eat the limit and still do not stop the errors): the
+ * rules must stay within the limit; an existing rule on the same subject is extended instead of a second rule; a
+ * conflict is resolved in the conflicting rule first; and a new rule the code could replace is refused.
+ */
+function ruleGate(ctx, name, content, oldBody, isNew, enforcedBy) {
+  const rules = assembleRules({ brainDir: ctx.brainDir, policy: ctx.policy, harness: 'claude-code' });
+  const limit = ctx.policy?.limits?.rules_chars ?? 10000;
+  const grow = content.trim().length - oldBody.trim().length + (isNew ? name.length + 6 : 0);
+  if (grow > 0 && rules.chars + grow > limit) fail(`rules would have ${rules.chars + grow} chars > ${limit}: a rule must not grow the rules over the limit; put the gate into the code (hook, script) or into an existing rule by rewording it shorter, and condense first (skill workflow:consolidate, P-022)`);
+  // Condensing a rule (fewer words, none new) is what the limit asks for; judging it again only re-reports the old wording.
+  if (!isNew && onlyCondenses(content, oldBody)) return;
+  const corpus = ruleCorpus({ brainDir: ctx.brainDir, coreDir: path.join(ctx.pluginRoot, 'rules'), skip: name });
+  const verdict = judgeRule({ id: name, text: content, enforcedBy, oldText: isNew ? '' : oldBody }, corpus, { spawn: spawnSync });
+  const list = (a) => a.map((x) => `${x.id} (${x.how})`).join('; ');
+  const fix = (id) => (/^P-\d{3}$/.test(id) ? `${id} is a workflow principle: report it to maintainer/workflow-dev (send --level assist) or save an exception` : `save.mjs rule ${id} --content "<reworded>"`);
+  if (verdict.conflicts.length) fail(`rule ${name} conflicts with ${list(verdict.conflicts)}: two rules must not order different behaviour; resolve the conflict in that rule first (${verdict.conflicts.map((c) => fix(c.id)).join('; ')}), then save this one only if something is left [${verdict.by}]`);
+  if (!isNew) return;
+  const open = unanswered(verdict.overlaps, args.distinct);
+  if (open.length) fail(`rule ${name} overlaps ${list(verdict.overlaps.filter((o) => open.includes(o.id)))}: extend or narrow the existing rule instead of a new one (${open.map(fix).join('; ')}); only when it truly is another subject: --distinct "<id>: <how it differs and why it does not conflict>; …" for each [${verdict.by}]`);
+  if (verdict.code_instead && !(typeof args['needs-text'] === 'string' && args['needs-text'].trim().length >= 20)) fail(`rule ${name} can be enforced by code alone: ${verdict.code_instead} Do that (skill fix, or report it to maintainer/workflow-dev) and drop the rule; the code's own message teaches the agent. Only when the agent must know it before acting: --needs-text "<why>" [${verdict.by}]`);
+}
+
 function saveRule(ctx) {
   const [name] = rest;
   if (!name || !isValidId(name)) fail('usage: save.mjs rule <name> --content "..." | --remove --reason "..." (name: lowercase, digits, hyphens)');
@@ -147,7 +202,13 @@ function saveRule(ctx) {
   const proc = procedureSignal(args.content);
   if (proc) fail(`rule content reads as a procedure (${proc}): save the steps as a skill (save.mjs skill <name> --description "Použi, keď ..." --origin routine) and keep in the rule only the gate (MUST / MUST NOT, "skill <name>"), P-007`);
   const existing = parseFrontmatter(readText(path.join(ctx.brainDir, rel), ''));
-  const data = { key: `rule-${name}`, title: args.title || existing.data.title || name, aliases: asList(args.aliases), created: existing.data.created || today(), updated: today() };
+  const isNew = !fs.existsSync(path.join(ctx.brainDir, rel));
+  // Code first (operator 2026-11-03): a new rule exists only next to the code that blocks its violation; what code cannot
+  // check goes into an existing rule, not a new one.
+  if (isNew && args.unenforced !== undefined) fail('a new rule needs --enforced-by <file>[:<symbol>]: rules are unreliable, so a new one exists only next to the code that blocks its violation; what code cannot check belongs in an existing rule (extend it: save.mjs rule <existing> --content ...), not a new one');
+  const enforcement = enforcementOf(ctx, existing.data);
+  ruleGate(ctx, name, String(args.content), existing.body || '', isNew, enforcement.enforced_by?.join(', '));
+  const data = { key: `rule-${name}`, title: args.title || existing.data.title || name, aliases: asList(args.aliases), ...enforcement, created: existing.data.created || today(), updated: today() };
   const res = brainWrite(ctx, { ops: [{ path: rel, content: serializeFrontmatter(data, String(args.content)) }], message: `save rule ${name}` });
   finish(ctx, res, [rel]);
   out('rule check (P-007): if it says how or when to do something (order of work, how to deploy or update), it is a skill with a trigger in its description; the rule keeps only the gate');
@@ -260,7 +321,7 @@ function saveSkill(ctx) {
   finish(ctx, res, [rel, ...scripts]);
   out(hit ? `${sed !== null ? 'edited' : 'extended'} existing skill ${hit.skillName}` : `new skill ${name} (origin: ${origin}); it reaches the project at the next session start`);
   // P-052: the skill text calls its script by the deployed absolute path, never relative to the cwd or from scratch.
-  for (const s of scripts) out(`script runs as: node ${toPosixPath(path.join(ctx.projectDir, PROJECT_SKILLS_DIR, path.posix.basename(path.posix.dirname(s)), path.posix.basename(s)))} (write this path in the skill text)`);
+  for (const s of scripts) out(`script runs as: ${s.endsWith(".sh") ? "sh" : "node"} ${toPosixPath(path.join(ctx.projectDir, PROJECT_SKILLS_DIR, path.posix.basename(path.posix.dirname(s)), path.posix.basename(s)))} (write this path in the skill text)`);
 }
 
 function saveHandover(ctx) {
@@ -276,10 +337,21 @@ function saveHandover(ctx) {
   out(formatWriteResult(res, [`topics/${topic}/handover.md`]));
 }
 
+/** Persona docs/ (P-024): files written directly are committed and pushed in one script commit. */
+function saveDocs(ctx) {
+  if (!ctx.brainInfo?.persona) fail('save.mjs docs: only a persona keeps documents in brain (docs/); in a project they belong to the project repo (P-024)');
+  const st = spawnSync('git', ['status', '--porcelain', '-uall', '--', 'docs'], { cwd: ctx.brainDir, encoding: 'utf8' });
+  const rels = st.stdout.split('\n').filter(Boolean).map((l) => l.slice(3).replace(/^.* -> /, ''));
+  if (!rels.length) { out('unchanged: docs/ (nothing to commit)'); return; }
+  const ops = rels.map((rel) => (fs.existsSync(path.join(ctx.brainDir, rel)) ? { path: rel, content: fs.readFileSync(path.join(ctx.brainDir, rel), 'utf8') } : { path: rel, remove: true }));
+  const res = brainWrite(ctx, { ops, message: `docs: ${args.message || rels.join(', ')}` });
+  finish(ctx, res, rels);
+}
+
 try {
   const ctx = loadContext({ project: args.project });
-  const handlers = { memory: saveMemory, decision: saveDecision, rule: saveRule, exception: saveException, skill: saveSkill, handover: saveHandover };
-  if (!handlers[category]) fail('usage: save.mjs memory|decision|rule|exception|skill|handover ...');
+  const handlers = { memory: saveMemory, decision: saveDecision, rule: saveRule, exception: saveException, skill: saveSkill, handover: saveHandover, docs: saveDocs };
+  if (!handlers[category]) fail('usage: save.mjs memory|decision|rule|exception|skill|handover|docs ...');
   handlers[category](ctx);
 } catch (err) {
   fail(err.message);

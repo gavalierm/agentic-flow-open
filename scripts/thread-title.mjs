@@ -1,7 +1,9 @@
-// P-036: the thread title follows the thread's topic. The hook cannot rename a thread itself (T3 renames only through its
+// T3-WORKAROUND(t3-cli-title) P-036: the thread title follows the thread's topic. The hook cannot rename a thread itself (T3 renames only through its
 // agent tool), so it reads the title (`thread_title.command`, default `t3 thread show --json <thread>`) once per change of the
 // topic and gives the agent one line. Skipped: persona main threads (they hold `main`), titles the operator changed by hand
-// (title differs from the one the workflow asked for and from the one it saw before), bell turns, a harness outside T3.
+// (title differs from the one the workflow asked for and from the one it saw before), bell turns, a harness outside T3,
+// and a thread that holds more than one work topic: none of them is "the" topic, and `held` is alphabetical, so the first
+// one is arbitrary (alice 2026-11-03: workflow-dev thread renamed to carol-v2, the other topic it held).
 import { spawnSync } from 'node:child_process';
 
 export const TITLE_TIMEOUT_MS = 3000;
@@ -26,7 +28,7 @@ export function readThreadTitle(ctx, run = spawnSync) {
 export function threadTitleSignal(ctx, held, state, { read = readThreadTitle, env = process.env } = {}) {
   // Only inside T3 (it sets T3CODE_THREAD_ID); elsewhere there is no title to follow.
   if (!env.T3CODE_THREAD_ID || !ctx.policy?.thread_title?.command || !ctx.thread || !state) return null;
-  if (!held.length || held.some((t) => t.id === 'main')) return null;
+  if (held.length !== 1 || held[0].id === 'main') return null;
   const topic = held[0].id;
   if (state.title_topic === topic) return null;
   const current = read(ctx);

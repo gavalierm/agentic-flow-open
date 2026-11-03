@@ -8,6 +8,6 @@ Dáta workflow pre jeden projekt (P-024). Zapisujú sem iba skripty workflow (`s
 - `exceptions/`: výnimky z princípov po vrstvách (P-035). `logs/`: surové pozorovania (P-030).
 - `local/` (necommitované): indexy, `exceptions.md`, `threads/`, `log-buffer/`, `outbox/`.
 - `policy.json`: projektové doplnky politiky (P-017).
-- Persona (P-024): repo persony je zároveň brain (`"brain": "."`); navyše obsahuje iba `.workflow.json`, `.gitignore`, `.claude/settings.json` (commituje adaptér) a necommitované `scratch/`, `local/`.
+- Persona (P-024): repo persony je zároveň brain (`"brain": "."`); navyše obsahuje iba `.workflow.json`, `.gitignore`, `.claude/settings.json` (commituje adaptér) `docs/` (trvalé dokumenty persony, zapisuje agent priamo, commit `save.mjs docs`) a necommitované `scratch/`, `local/`.
 
 Aktivácia na novom stroji: `git config core.hooksPath .githooks` (robí `brain-init.mjs --attach`). Ručný commit operátora: `git commit --no-verify` (vedome).

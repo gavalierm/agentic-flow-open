@@ -34,9 +34,23 @@ export function isWorkflowScript(p) {
 export function normalizeCommand(command, policy) {
   const programs = policy?.logs?.subcommand_programs || [];
   const out = [];
-  for (const part of String(command).split(/\s*(?:&&|\|\||;|\|)\s*/)) {
+  // Heredoc bodies and quoted text are data, not commands: a commit message or a python script would otherwise split
+  // into fake programs (alice 2026-11-03: `the` from a commit body counted as a command of a sequence).
+  const masked = String(command)
+    .replace(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1[^\n]*\n[\s\S]*?\n\s*\2\s*(?=\n|$)/g, (m) => m.split('\n')[0])
+    .replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, 'Q');
+  for (const part of masked.split(/\s*(?:&&|\|\||;|\||\n)\s*/)) {
     const words = part.trim().split(/\s+/).filter(Boolean);
-    while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) words.shift();
+    const assigned = /^[A-Za-z_][A-Za-z0-9_]*=\$\((.+)$/.exec(words[0] || '');
+    if (assigned) words[0] = assigned[1]; // out=$(npm test ...): the program is npm
+    // groups and subshells are syntax, not programs (`|| { echo x; exit 1; }` made a sequence of `{+exit+}`)
+    while (words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0]) || /^[{}()!]+$/.test(words[0]))) words.shift();
+    if (words.length) words[0] = words[0].replace(/^[({]+/, '');
+    // Shell keywords are syntax: the body after do/then/else and the condition after if/while/until are the commands;
+    // a for/case/select header has none (Bob 2026-11-03: `for+echo` was proposed as a skill).
+    while (['do', 'then', 'else', 'elif', 'if', 'while', 'until', '!'].includes(words[0])) words.shift();
+    if (['for', 'case', 'select', 'esac', 'in'].includes(words[0])) continue;
+    if (['}', 'exit', 'fi', 'done', 'true', 'false', 'break', 'continue', 'return'].includes(words[0])) continue;
     if (!words.length) continue;
     let prog = words[0].split('/').pop();
     if (['sudo', 'time', 'env'].includes(prog) && words[1]) { words.shift(); prog = words[0].split('/').pop(); }
@@ -47,6 +61,8 @@ export function normalizeCommand(command, policy) {
       out.push(`${prog} ${words[1].split('/').pop()}`);
       continue;
     }
+    // sed without in-place editing only reads (`sed -n 10,20p`): it is reading code, not a procedure step.
+    if (prog === 'sed' && !words.some((w) => /^-[a-zA-Z]*i/.test(w) || w.startsWith('--in-place'))) { out.push('sed -n'); continue; }
     let sub = null;
     if (programs.includes(prog)) {
       const cand = words.slice(1).find((w) => !w.startsWith('-'));
@@ -89,9 +105,9 @@ export function countByField(lines, index = 1) {
   return counts;
 }
 
-/** Key of a P-030 proposal signal (`sequence <name> <n>x: propose a skill ...` -> `sequence <name>`), null for other signals. */
+/** Key of a P-030 proposal signal (`sequence <name> <n>x: create ...` -> `sequence <name>`), null for other signals. */
 export function proposalKey(signal) {
-  const m = /^sequence (\S+) \d+x: propose a skill/.exec(String(signal || ''));
+  const m = /^sequence (\S+) \d+x: /.exec(String(signal || ''));
   return m ? `sequence ${m[1]}` : null;
 }
 
@@ -132,7 +148,7 @@ export function flushBuffer(ctx, sessionId) {
   const threshold = policy.thresholds.sequence_repeats;
   for (const s of new Set(newSeqs)) {
     if (after.get(s) >= threshold && (before.get(s) || 0) < threshold && !rejectedProposal(brainDir, s)) {
-      signals.push(`sequence ${s} ${after.get(s)}x: propose a skill with a script (P-030)`);
+      signals.push(`sequence ${s} ${after.get(s)}x: create a skill with a script or add the script to the existing skill yourself, no operator approval (P-030)`);
     }
   }
   const oldFailures = failLines.filter((l) => {

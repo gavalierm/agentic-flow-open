@@ -6,14 +6,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { PLUGIN_ROOT, readJson, writeJson, shortSha, parseArgs, fail } from '../scripts/util.mjs';
-import { enabledPluginsFor, channelOf, WORKFLOW_CONFIG, resolveProject, ensureWorkflowConfig, brainExists, loadPolicy, expandBrainPath, SCRATCH_DIR } from '../scripts/config.mjs';
+import { enabledPluginsFor, channelOf, WORKFLOW_CONFIG, resolveTargetProject, ensureWorkflowConfig, brainExists, loadPolicy, expandBrainPath, SCRATCH_DIR, NO_BRAIN_NOTE } from '../scripts/config.mjs';
 import { commitPersonaFiles } from '../scripts/persona.mjs';
 import { syncBrainSkills, ensureGitignore } from '../scripts/skills-sync.mjs';
 import { generateCodex } from '../adapters/codex/generate.mjs';
 
 export const MANAGED_KEYS = ['enabledPlugins', 'autoMemoryEnabled', 'autoCompactWindow', 'permissions'];
 
-/** Pure function: policy + brain relative path -> project .claude/settings.json content. */
+/** Pure function: policy + brain relative path (null: no brain) -> project .claude/settings.json content. */
 export function claudeSettings(policy, brainRel, channel = 'stable') {
   const deny = [];
   for (const p of policy.harness?.deny_paths || []) {
@@ -22,10 +22,12 @@ export function claudeSettings(policy, brainRel, channel = 'stable') {
   deny.push('Edit(.claude/skills/**)');
   // Native ask: the whole command or the command followed by arguments (`git checkout --orphan` is not
   // `git checkout --`). Commands with safe forms (ask_commands_except) are left to the PreToolUse hook,
-  // a native ask rule cannot express the exception (P-018, P-015).
+  // a native ask rule cannot express the exception (P-018, P-015). Restores are also left to the hook: it passes a
+  // restore of the thread's own edits, a native rule would ask anyway (alice 2026-11-02: git checkout -- of own edits).
   const except = policy.harness?.ask_commands_except || [];
+  const hookDecides = ['git checkout --', 'git restore'];
   const ask = (policy.harness?.ask_commands || [])
-    .filter((c) => !except.some((e) => e.startsWith(`${c} `)))
+    .filter((c) => !hookDecides.includes(c) && !except.some((e) => e.startsWith(`${c} `)))
     .flatMap((c) => [`Bash(${c})`, `Bash(${c} *)`]);
   return {
     enabledPlugins: enabledPluginsFor(channel),
@@ -61,7 +63,7 @@ export function generateClaudeCode({ projectDir, brainRel: brainRelArg = null, c
   if (existing.permissions?.defaultMode) notes.push('removed permissions.defaultMode: it does not apply from project settings (P-015)');
   // Channel: explicit, else kept from existing settings, else stable (regeneration never switches a dev project back).
   const channel = channelArg || channelOf(existing) || 'stable';
-  const generated = claudeSettings(policy, brainInfo.brainRel, channel);
+  const generated = claudeSettings(policy, brainInfo?.brainRel ?? null, channel);
   notes.push(`channel ${channel}`);
   if (channel === 'dev' && !devPluginDirs().length) notes.push('channel dev: CLAUDE_CODE_PLUGIN_DIRS has no workflow plugin; sessions of this project load no workflow until the variable points to the dev clone (README, Vývojová verzia)');
   const merged = { ...existing };
@@ -84,10 +86,12 @@ export function generateClaudeCode({ projectDir, brainRel: brainRelArg = null, c
   if (hasBrain) {
     const sync = syncBrainSkills({ projectDir, brainDir });
     notes.push(`brain skills copied to .claude/skills/: ${sync.copied.length ? sync.copied.join(', ') : 'none'}`);
+  } else if (!brainInfo) {
+    notes.push(NO_BRAIN_NOTE.replace('<harness>', 'claude-code'));
   } else {
     notes.push(`brain not found at ${brainInfo.brainRel}; propose to the operator: node <plugin>/bin/brain-init.mjs ${brainInfo.brainRel} --project . (P-024)`);
   }
-  return { written, notes, settings: ordered, brainRel: brainInfo.brainRel, hasBrain, channel };
+  return { written, notes, settings: ordered, brainRel: brainInfo?.brainRel ?? null, hasBrain, channel };
 }
 
 /** Workflow plugin directories listed in CLAUDE_CODE_PLUGIN_DIRS (absolute or ~ paths). */
@@ -108,15 +112,15 @@ if (process.argv[1]?.endsWith('adapter.mjs')) {
   }
   try {
     if (harness === 'claude-code') {
-      const projectDir = resolveProject(args.project);
+      const projectDir = resolveTargetProject(args.project);
       const res = generateClaudeCode({ projectDir, brainRel: typeof args.brain === 'string' ? args.brain : null, channel: typeof args.channel === 'string' ? args.channel : null });
       process.stdout.write(`generated in ${projectDir}:\n${res.written.map((w) => `- ${w}`).join('\n')}\n${res.notes.map((n) => `note: ${n}`).join('\n')}\n`);
-      process.stdout.write(res.brainRel === '.' ? 'restart the session so the plugin loads\n' : 'commit .claude/settings.json and .workflow.json; restart the session so the plugin loads\n');
+      process.stdout.write(res.brainRel === '.' ? 'restart the session so the plugin loads\n' : `commit .claude/settings.json${res.brainRel ? ' and .workflow.json' : ''}; restart the session so the plugin loads\n`);
     } else if (harness === 'codex') {
-      const projectDir = resolveProject(args.project);
+      const projectDir = resolveTargetProject(args.project);
       const res = generateCodex({ projectDir, brainRel: typeof args.brain === 'string' ? args.brain : null });
       process.stdout.write(`generated in ${projectDir}:\n${res.written.map((w) => `- ${w}`).join('\n')}\n${res.notes.map((n) => `note: ${n}`).join('\n')}\n`);
-      process.stdout.write('commit .codex/config.toml, AGENTS.md and .workflow.json (hooks.json and .agents/skills/ stay local); confirm trust and hooks (/hooks) in Codex\n');
+      process.stdout.write(`commit .codex/config.toml, AGENTS.md${res.brainRel ? ' and .workflow.json' : ''} (hooks.json and .agents/skills/ stay local); confirm trust and hooks (/hooks) in Codex\n`);
     } else {
       fail('usage: adapter.mjs claude-code [--channel stable|dev] | codex [--project <dir>] [--brain ../<brain-name>] | --version');
     }

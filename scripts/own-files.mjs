@@ -1,0 +1,139 @@
+// The thread's own work (P-018, operator 2026-11-03: "cleaning up after yourself must not ask for approval"). Two cases:
+// - work files: anything under `scratch/` at the top of a git repo that ignores it (the session project or a repo the
+//   thread works in, e.g. ../agentic-flow/scratch/), disposable by definition (P-052);
+// - own edits: a tracked file the thread changed from a clean state; while its content still equals what the thread
+//   left (hash recorded after each tool call by PostToolUse), its uncommitted changes are the thread's alone, so
+//   restoring or overwriting it loses nobody else's work.
+import fs from 'node:fs';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { readThreadState, writeThreadState, SCRATCH_DIR } from './config.mjs';
+import { git } from './util.mjs';
+
+const OWN_LIMIT = 500;
+const PENDING = 'pending';
+
+/** abs lies under `<repo>/scratch/` and the repo ignores scratch/ (the scratch dir itself is not a work file). */
+export function inWorkScratch(abs) {
+  for (let p = path.dirname(path.resolve(abs)); p !== path.dirname(p); p = path.dirname(p)) {
+    if (path.basename(p) !== SCRATCH_DIR) continue;
+    const repo = path.dirname(p);
+    if (!fs.existsSync(path.join(repo, '.git'))) continue;
+    return git(['check-ignore', '-q', '--', SCRATCH_DIR], { cwd: repo }).ok;
+  }
+  return false;
+}
+
+export function fileHash(abs) {
+  try {
+    if (!fs.statSync(abs).isFile()) return null;
+    return createHash('sha1').update(fs.readFileSync(abs)).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+function ownEdits(ctx) {
+  if (!ctx.brainDir || !ctx.thread) return null;
+  return readThreadState(ctx.brainDir, ctx.thread).own_edits || {};
+}
+
+function saveOwnEdits(ctx, edits) {
+  const keys = Object.keys(edits);
+  const kept = keys.length > OWN_LIMIT ? Object.fromEntries(keys.slice(-OWN_LIMIT).map((k) => [k, edits[k]])) : edits;
+  writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), own_edits: kept });
+}
+
+/** The current content of abs is exactly what this thread left: its uncommitted changes are the thread's own. */
+export function ownedEdit(ctx, abs) {
+  const h = ownEdits(ctx)?.[abs];
+  return Boolean(h && h !== PENDING && h === fileHash(abs));
+}
+
+/** PreToolUse: a tracked clean file the tool is about to change becomes the thread's own edit (hash set after the tool). */
+export function claimOwn(ctx, files) {
+  const edits = ownEdits(ctx);
+  if (!edits || !files.length) return;
+  let changed = false;
+  for (const abs of files) {
+    if (edits[abs] && (edits[abs] === PENDING || edits[abs] === fileHash(abs))) continue;
+    edits[abs] = PENDING;
+    changed = true;
+  }
+  if (changed) saveOwnEdits(ctx, edits);
+}
+
+/** PostToolUse: record what the thread left in each own file; a deleted file leaves the list. */
+export function settleOwn(ctx, files) {
+  const edits = ownEdits(ctx);
+  if (!edits) return;
+  let changed = false;
+  for (const abs of files) {
+    if (!(abs in edits)) continue;
+    const h = fileHash(abs);
+    if (h) edits[abs] = h;
+    else delete edits[abs];
+    changed = true;
+  }
+  if (changed) saveOwnEdits(ctx, edits);
+}
+
+/** Files a shell command edits in place (`sed -i`, `perl -i`): not deleted, but changed like an Edit. */
+export function inPlaceEdits(words) {
+  const prog = words[0]?.split('/').pop();
+  if (prog !== 'sed' && prog !== 'perl') return [];
+  if (!words.some((w) => /^-[a-zA-Z]*i/.test(w) || w.startsWith('--in-place'))) return [];
+  const positional = [];
+  let hasScript = false;
+  for (let i = 1; i < words.length; i++) {
+    const w = words[i];
+    if (w === '-e' || w === '-f' || w === '--expression' || w === '--file') { hasScript = true; i++; continue; }
+    if (w.startsWith('-')) continue;
+    positional.push(w);
+  }
+  return hasScript ? positional : positional.slice(1);
+}
+
+// Shell writes the hooks cannot parse (a python or node script, a generator, `git apply`): PreToolUse records which
+// tracked files are dirty in the repos the command works in, PostToolUse compares. A file clean before and changed
+// after was changed by this command, so it is the thread's own edit like an Edit or `sed -i` (alice 2026-11-03:
+// edits by a python heredoc were not own and the later `git restore` asked the operator, P-018).
+const SHELL_LIMIT = 20;
+
+function dirtyTracked(top) {
+  const r = git(['diff', '--name-only', 'HEAD'], { cwd: top });
+  return r.ok ? r.stdout.split('\n').filter(Boolean).map((rel) => path.resolve(top, rel)) : null;
+}
+
+/** PreToolUse (shell): remember the dirty tracked files of each repo under dirs, keyed by the tool call. */
+export function snapshotShell(ctx, id, dirs) {
+  const edits = ownEdits(ctx);
+  if (!edits || !id) return;
+  const tops = [...new Set(dirs.map((d) => fs.existsSync(d) && git(['rev-parse', '--show-toplevel'], { cwd: d })).filter((r) => r && r.ok).map((r) => r.stdout))];
+  const dirty = {};
+  for (const top of tops) {
+    for (const abs of dirtyTracked(top) || []) dirty[abs] = { h: fileHash(abs), own: ownedEdit(ctx, abs) };
+  }
+  const state = readThreadState(ctx.brainDir, ctx.thread);
+  const before = Object.entries(state.shell_before || {}).slice(-(SHELL_LIMIT - 1));
+  writeThreadState(ctx.brainDir, ctx.thread, { ...state, shell_before: { ...Object.fromEntries(before), [id]: { tops, dirty } } });
+}
+
+/** PostToolUse (shell): files the command changed from clean, or changed further while own, become own edits. */
+export function settleShell(ctx, id) {
+  const edits = ownEdits(ctx);
+  if (!edits || !id) return;
+  const state = readThreadState(ctx.brainDir, ctx.thread);
+  const snap = state.shell_before?.[id];
+  if (!snap) return;
+  for (const top of snap.tops) {
+    for (const abs of dirtyTracked(top) || []) {
+      const was = snap.dirty[abs];
+      const h = fileHash(abs);
+      if (h && (!was || (was.own && was.h !== h))) edits[abs] = h;
+    }
+  }
+  const { [id]: _, ...rest } = state.shell_before;
+  writeThreadState(ctx.brainDir, ctx.thread, { ...state, shell_before: rest });
+  saveOwnEdits(ctx, edits);
+}

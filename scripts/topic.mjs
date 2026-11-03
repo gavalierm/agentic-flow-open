@@ -22,6 +22,11 @@ export function readTopic(brainDir, id) {
   return readJson(path.join(topicDir(brainDir, id), 'topic.json'), null);
 }
 
+/** The topic was created by this thread (its own test or mistake to clean up, P-018). */
+export function ownTopic(ctx, id) {
+  return !!ctx.thread && readTopic(ctx.brainDir, id)?.created_by === ctx.thread;
+}
+
 export function codeCopyPath(ctx, id) {
   return path.resolve(ctx.projectDir, '..', `${ctx.projectName}-topics`, id);
 }
@@ -46,14 +51,24 @@ export function createTopic(ctx, opts = {}) {
   return withBrainLock(ctx.brainDir, () => createTopicUnlocked(ctx, opts));
 }
 
-function createTopicUnlocked(ctx, { id, subject, kind = 'discussion', mode, claim = true, copy = true, forThread = null, newThread = false }) {
+/** The project is a persona: its repository is its brain (P-025). */
+export function isPersonaProject(ctx) {
+  try { return !!ctx.brainDir && fs.realpathSync(ctx.projectDir) === fs.realpathSync(ctx.brainDir); } catch { return false; }
+}
+
+function createTopicUnlocked(ctx, { id, subject, kind = 'discussion', mode, claim = true, copy = true, forThread = null, newThread = false, task = null, explicitProject = false }) {
   if (!isValidId(id)) throw new Error(`topic id "${id}" must be lowercase letters, digits and hyphens (P-036)`);
   if (id === MAIN_TOPIC) throw new Error('topic id "main" is reserved for the persona main thread: use topic.mjs main (P-045)');
   if (!subject || !String(subject).trim()) throw new Error('topic needs --subject "<one sentence>" (P-045)');
   if (!['code', 'discussion'].includes(kind)) throw new Error('kind must be code or discussion');
+  // A persona has no project code (P-025): a code topic from its session without --project went to the persona repo
+  // instead of the managed project (bob 2026-11-03, t3-workarounds-check in bob, not the managed project).
+  if (kind === 'code' && !explicitProject && isPersonaProject(ctx)) throw new Error(`code topic ${id} would be created in persona project ${path.basename(ctx.projectDir)}: a persona has no project code (P-025). Pass --project <managed project dir> (or --project ${ctx.projectDir} if the persona repo itself is the code)`);
   guardThread(ctx, 'create');
   if (topicExists(ctx.brainDir, id) || fs.existsSync(path.join(ctx.brainDir, 'topics', 'archive', id))) throw new Error(`topic ${id} already exists`);
   const topic = { id, subject: String(subject).trim(), kind, state: 'working', created: nowIso() };
+  // The creating thread may clean up its own topic (test, mistake) without operator approval (P-018).
+  if (ctx.thread) topic.created_by = ctx.thread;
   if (kind === 'code') topic.copy = relPosix(ctx.projectDir, codeCopyPath(ctx, id));
   const res = brainWrite(ctx, {
     internal: true,
@@ -68,8 +83,8 @@ function createTopicUnlocked(ctx, { id, subject, kind = 'discussion', mode, clai
   if (newThread && !forThread) {
     // P-036: a new topic gets its own T3 thread titled by the topic; its first message shows what the topic holds, so the
     // operator does not have to prompt it (alice 2026-11-02). Failure keeps the topic free and says why.
-    const started = startTopicThread(ctx, topic);
-    if (!started.ok) { out.claim = { ok: false, reason: `topic ${id} created, but no thread was started (${started.reason}); claim it with topic.mjs claim ${id}` }; return out; }
+    const started = startTopicThread(ctx, topic, undefined, { task });
+    if (!started.ok) { out.claim = { ok: false, reason: `topic ${id} created, but no thread was started (${started.reason}); claim it with topic.mjs claim ${id} or start its thread later with topic.mjs thread ${id}` }; return out; }
     out.thread = started.thread;
     forThread = started.thread;
   }
@@ -89,21 +104,26 @@ function createTopicUnlocked(ctx, { id, subject, kind = 'discussion', mode, clai
 }
 
 /** First message of a topic's own thread: what the topic holds and what to do (P-036). */
-export function topicThreadMessage(topic) {
+// With a task the operator already gave the work, so the thread does it now instead of waiting for a prompt (operator
+// 2026-11-02: topic agent-playbook was created for a clear task and its thread stopped asking for an instruction).
+export function topicThreadMessage(topic, { task = null } = {}) {
+  const t = task && String(task).trim();
   return [
     `Téma ${topic.id} (${topic.kind}) je pridelená tomuto vláknu.`,
     `Predmet: ${topic.subject}`,
     ...(topic.copy ? [`Kópia kódu: ${topic.copy}`] : []),
     '',
-    'Vypíš operátorovi stručne, čo téma obsahuje (predmet, handover), a počkaj na jeho pokyn.',
+    ...(t
+      ? ['Zadanie operátora:', t, '', 'Zadanie vykonaj hneď; na ďalší pokyn nečakaj a nepýtaj sa, či začať.']
+      : ['Vypíš operátorovi stručne, čo téma obsahuje (predmet, handover), a počkaj na jeho pokyn.']),
   ].join('\n');
 }
 
-/** Start a T3 thread for the topic via `topics.thread_start_command` (default `t3 thread start --json`); returns its id. */
-export function startTopicThread(ctx, topic, run = spawnSync) {
+/** T3-WORKAROUND(t3-cli-title) Start a T3 thread for the topic via `topics.thread_start_command` (default `t3 thread start --json`); returns its id. */
+export function startTopicThread(ctx, topic, run = spawnSync, { task = null } = {}) {
   const cmd = String(ctx.policy?.topics?.thread_start_command || '').trim().split(/\s+/).filter(Boolean);
   if (!cmd.length) return { ok: false, reason: 'topics.thread_start_command not set' };
-  const r = run(cmd[0], [...cmd.slice(1), '--title', topic.id, ctx.projectDir, '-'], { encoding: 'utf8', input: topicThreadMessage(topic), timeout: 30000 });
+  const r = run(cmd[0], [...cmd.slice(1), '--title', topic.id, ctx.projectDir, '-'], { encoding: 'utf8', input: topicThreadMessage(topic, { task }), timeout: 30000 });
   if (r.error || r.status !== 0) return { ok: false, reason: (r.error?.message || r.stderr || `exit ${r.status}`).trim().split('\n')[0] };
   let thread = null;
   try {
@@ -112,6 +132,23 @@ export function startTopicThread(ctx, topic, run = spawnSync) {
   } catch { thread = String(r.stdout || '').trim().split(/\s+/)[0] || null; }
   if (!thread || !/^[A-Za-z0-9._:-]{1,200}$/.test(thread)) return { ok: false, reason: `no thread id in output of ${cmd.join(' ')}` };
   return { ok: true, thread };
+}
+
+/**
+ * New T3 thread for an existing topic nobody holds (P-036): the persona's main thread could not start the work of a topic
+ * whose own thread never claimed it; mail has no address without a holder and t3_thread_send is not for other agents'
+ * work (Bob 2026-11-03: thread of tracker-remote-verify stood on a question). A held topic is refused (takeover is P-037).
+ */
+export function startThreadForTopic(ctx, id, { task = null, mode, run } = {}) {
+  guardThread(ctx, 'thread');
+  if (!topicExists(ctx.brainDir, id)) throw new Error(`topic ${id} does not exist (archived or never created)`);
+  const holder = readHolder(ctx.brainDir, id);
+  if (holder.thread) return { ok: false, reason: `topic ${id} ${heldBy(holder)}; a new thread needs a free topic: write to the holder (comms send --to ${id}) or ask the operator about a takeover (P-037)` };
+  const topic = readTopic(ctx.brainDir, id);
+  const started = startTopicThread(ctx, topic, run, { task });
+  if (!started.ok) return { ok: false, reason: `no thread was started (${started.reason})` };
+  const claim = assignTopic(ctx, id, started.thread, { mode });
+  return { ok: true, thread: started.thread, claim };
 }
 
 /** Holder of a just-created topic is another (new) thread; the topic has no holder yet, so no takeover is possible. */
@@ -141,7 +178,7 @@ function claimTopicUnlocked(ctx, id, { force = false, operatorApproved = false, 
   let holder = readHolder(ctx.brainDir, id);
   if (holder.thread && holder.thread !== ctx.thread) {
     if (!force) return { ok: false, reason: `topic ${id} ${heldBy(holder)}; not taken. An instruction to claim it is not an instruction to take it over: tell the operator who holds it and ask (blocker, P-059) whether to take it over; only after an explicit yes: --force --operator-approved (P-037)`, holder };
-    if (!operatorApproved) throw new Error('--force requires --operator-approved: takeover is allowed only on explicit operator instruction (P-037)');
+    if (!operatorApproved && !ownTopic(ctx, id)) throw new Error('--force requires --operator-approved: takeover is allowed only on explicit operator instruction (P-037); a topic this thread created is its own to clean up (P-018)');
   }
   if (holder.thread === ctx.thread) {
     // Idempotent re-registration: repairs a claim whose mail registration failed earlier (P-041).
@@ -163,7 +200,7 @@ function claimTopicUnlocked(ctx, id, { force = false, operatorApproved = false, 
     internal: true,
     sync: false,
     ops: [{ path: `topics/${id}/holder.json`, content: JSON.stringify(newHolder, null, 2) + '\n' }],
-    message: `topic claim ${id} by ${ctx.thread}${force ? ' (force, operator approved)' : ''}`,
+    message: `topic claim ${id} by ${ctx.thread}${force ? (operatorApproved ? ' (force, operator approved)' : ' (force, own topic)') : ''}`,
   });
   const sync = brainSync(ctx.brainDir);
   if (sync.conflict) {
@@ -234,7 +271,7 @@ function releaseTopicUnlocked(ctx, id, { force = false, operatorApproved = false
   const holder = readHolder(ctx.brainDir, id);
   if (holder.thread && holder.thread !== ctx.thread) {
     if (!force) throw new Error(`topic ${id} ${heldBy(holder)}; only the holder releases it (P-037)`);
-    if (!operatorApproved) throw new Error('--force requires --operator-approved (P-037)');
+    if (!operatorApproved && !ownTopic(ctx, id)) throw new Error('--force requires --operator-approved (P-037); a topic this thread created is its own to clean up (P-018)');
   }
   // An already free topic still registers the release: a mail registration that failed earlier is repaired here (P-041).
   const res = holder.thread ? brainWrite(ctx, {

@@ -7,7 +7,8 @@
 //   comms.mjs list [--topic <id>]                       waiting messages without text: id, level, sender, created (no pickup)
 //   comms.mjs receive [--id <id>[,<id>]] [--topic <id>]  full messages; this is the pickup (picked_at); --id reads only those
 //   comms.mjs ack --id <id>[,<id>]                      message stops waiting
-//   comms.mjs send --level blocker|steer|assist (--to [<project>/]<topic> | --to @<persona>/main) (--text "..." | --file <path>) [--ttl 5m|30m]
+//   comms.mjs settle --id <id>[,<id>]                   picked assist answered another way (no reply --reply-to)
+//   comms.mjs send --level blocker|steer|assist (--to [<project>/]<topic> | --to @<persona>/main) (--text "..." | --file <path>) [--ttl 5m|30m] [--from <held topic>]
 //   comms.mjs send --reply-to <id> [--text ...]         reply: level inherited from the original (a lower --level is raised)
 //   comms.mjs notices [--all] | decide --notice <id> --decision <id> [--target <project>/<topic>]
 //   comms.mjs register [<topic>]                        idempotent registration of held topics in the mail service
@@ -17,6 +18,7 @@ import { loadContext, inSubagent, readThreadState, writeThreadState } from '../s
 import { commsSettings, runClient, mailQueries, queryArgs, mailCount, formatMail, registerTopic, parseAddress, isMainTopic, LEVELS } from '../scripts/comms.mjs';
 import { readTopic, mailboxTopics, heldTopics, heldBy } from '../scripts/topic.mjs';
 import { readHolder } from '../scripts/brain.mjs';
+import { setTimer, clearTimer, activeTimer, REPLY_WINDOW_MS } from '../scripts/waker.mjs';
 
 const args = parseArgs(process.argv.slice(2));
 const [cmd, positional] = args._;
@@ -84,7 +86,12 @@ function header(m) {
  */
 function notePicked(ctx, messages) {
   if (!ctx.brainDir || !ctx.thread || inSubagent()) return;
-  const add = messages.filter((m) => m.level === 'assist' && !m.reply_to).map((m) => ({ id: m.id, from: m.sender || '?', at: nowIso() }));
+  // P-057: the reply the thread timer waited for came: the timer is spent.
+  const timerFor = readThreadState(ctx.brainDir, ctx.thread).timer?.for;
+  if (timerFor && messages.some((m) => m.reply_to === timerFor)) clearTimer(ctx.brainDir, ctx.thread);
+  // Only mail with a reply path waits for an answer: a server event without a sender thread or source topic cannot be
+  // answered (`send --reply-to` is refused), so it stayed "unanswered" forever (Bob 2026-11-03: 9 server events).
+  const add = messages.filter((m) => m.level === 'assist' && !m.reply_to && (m.thread_id || (m.from_project && m.from_topic))).map((m) => ({ id: m.id, from: m.sender || '?', topic: m.topic || null, at: nowIso() }));
   if (!add.length) return;
   const state = readThreadState(ctx.brainDir, ctx.thread);
   const have = new Set((state.picked_assist || []).map((w) => w.id));
@@ -140,6 +147,16 @@ function cmdReceive(ctx) {
   }
 }
 
+/** `settle --id <id>`: a picked assist answered another way (one reply for several messages, a new message naming it). */
+function cmdSettle(ctx) {
+  const list = ids();
+  if (!list.length) fail('usage: comms.mjs settle --id <id>[,<id>]  (picked assist answered another way, P-042)');
+  const state = ctx.brainDir && ctx.thread ? readThreadState(ctx.brainDir, ctx.thread) : {};
+  const known = new Set((state.picked_assist || []).map((w) => w.id));
+  for (const id of list) settlePicked(ctx, id);
+  out(`settled: ${list.filter((id) => known.has(id)).join(', ') || 'none'}${list.some((id) => !known.has(id)) ? `; not picked here: ${list.filter((id) => !known.has(id)).join(', ')}` : ''}`);
+}
+
 function cmdAck(ctx) {
   guardMain('ack');
   const list = ids();
@@ -148,12 +165,38 @@ function cmdAck(ctx) {
   out(`acked: ${(data.acked || []).join(', ') || 'none'}`);
 }
 
+/**
+ * Sender topic: `--from <held topic>`, for a reply the topic the original was addressed to, else the first held topic
+ * (work topics before main). A thread holding several topics signed mail with the alphabetically first one
+ * (alice 2026-11-03: carol-v2 instead of workflow-dev).
+ */
+function fromTopic(ctx, replyTo) {
+  const hd = mailboxTopics(ctx);
+  const held = (id) => id && hd.some((t) => t.id === id);
+  if (args.from !== undefined && args.from !== true) {
+    const id = String(args.from);
+    if (!held(id)) fail(`--from ${id}: this thread does not hold that topic; held: ${hd.map((t) => t.id).join(', ') || 'none'}`);
+    return id;
+  }
+  if (replyTo && ctx.brainDir && ctx.thread) {
+    const orig = (readThreadState(ctx.brainDir, ctx.thread).picked_assist || []).find((w) => w.id === replyTo);
+    if (held(orig?.topic)) return orig.topic;
+  }
+  return hd[0]?.id || null;
+}
+
+/** Named only when the thread holds several work topics: then the sender topic is a choice (`--from`). */
+function fromNote(ctx, from) {
+  const work = mailboxTopics(ctx).filter((t) => !isMainTopic(t)).map((t) => t.id);
+  return from && work.length > 1 ? `; from ${from} (this thread also holds ${work.filter((id) => id !== from).join(', ')}; another sender: --from <topic>)` : '';
+}
+
 function cmdSend(ctx) {
   guardMain('send');
   const replyTo = args['reply-to'] !== undefined && args['reply-to'] !== true ? String(args['reply-to']) : null;
   let level = args.level === true ? undefined : args.level;
   // Level is required, except for a reply: the service keeps the original's level (P-042). `info` is removed (2026-11-02).
-  if (!replyTo && !LEVELS.includes(level)) fail(`${level === 'info' ? 'level info is removed, every message asks for action; use' : '--level is required:'} ${LEVELS.join('|')} (blocker: you cannot continue without the reply; steer: the holder of the topic stops work on it now; assist: you continue elsewhere, the answer is needed, P-042)`);
+  if (!replyTo && !LEVELS.includes(level)) fail(`${level === 'info' ? 'level info is removed, every message asks for action; use' : '--level is required:'} ${LEVELS.join('|')} (blocker: you need the answer soon; steer: the holder adjusts the work on the topic now; assist: the answer is needed, no rush; no level stops the work, P-042, P-057)`);
   let text = args.text === true ? undefined : args.text;
   if (args.file) text = fs.readFileSync(String(args.file), 'utf8');
   if (text === '-' || (text === undefined && !process.stdin.isTTY)) text = readStdin();
@@ -184,19 +227,39 @@ function cmdSend(ctx) {
   }
   // TTL is the pickup deadline (service defaults and maxima: blocker 5m, steer 5m, assist 30m; a shorter --ttl only).
   if (args.ttl !== undefined && args.ttl !== true) clientArgs.push('--ttl', String(args.ttl));
-  const hd = mailboxTopics(ctx);
-  if (hd.length) clientArgs.push('--from-project', s.project, '--from-topic', hd[0].id);
-  const data = must(runClient(ctx, clientArgs, { input: String(text) }));
+  const from = fromTopic(ctx, replyTo);
+  if (from) clientArgs.push('--from-project', s.project, '--from-topic', from);
+  const res = runClient(ctx, clientArgs, { input: String(text) });
+  // The sender closed its topic: nobody can read a reply, so the picked assist is settled here; otherwise the Stop hook
+  // reminds of it in every turn (alice 2026-11-02, a report from a closed bob topic). A still needed answer is new mail.
+  if (!res.ok && replyTo && /nemá vlákno ani zdrojovú tému/i.test(res.error || '')) {
+    settlePicked(ctx, replyTo);
+    fail(`${res.error}\nassist ${replyTo} settled: it has no reply path (no sender thread or topic); nothing waits for an answer`);
+  }
+  if (!res.ok && replyTo && (res.data?.status === 410 || res.data?.details?.closed_at !== undefined || /uzavret/i.test(res.error || ''))) {
+    settlePicked(ctx, replyTo);
+    fail(`${res.error}\nassist ${replyTo} settled: the sender's topic is closed, a reply has no reader; if the sender still needs the answer, send new mail with the id in the text (comms send --level assist --to @<persona>/main)`);
+  }
+  const data = must(res);
   if (data.queued) {
     out(`comms unavailable: message queued in <brain>/local/outbox and sent with the next successful call (${destination})`);
   } else {
     const sentLevel = data.level || level;
-    out(`sent ${data.id} (${sentLevel}${data.level_raised_from ? `, raised from ${data.level_raised_from}: a reply is as urgent as the message it answers` : ''}) -> ${destination}${data.state === 'held' ? `; topic not registered: held, operator notice ${data.notice_id} (new topic? / redirect, P-045)` : ''}`);
+    out(`sent ${data.id} (${sentLevel}${data.level_raised_from ? `, raised from ${data.level_raised_from}: a reply is as urgent as the message it answers` : ''}) -> ${destination}${fromNote(ctx, from)}${data.state === 'held' ? `; topic not registered: held, operator notice ${data.notice_id} (new topic? / redirect, P-045)` : ''}`);
   }
   if (replyTo) settlePicked(ctx, replyTo);
   const finalLevel = data.level || level;
   if (finalLevel === 'assist' && !replyTo && data.expires_at) out(`assist sent: continue other work; the reply wakes you; without pickup by ${data.expires_at} the expiry wakes you (P-042)`);
-  if (finalLevel === 'blocker' && !replyTo) out('blocker sent: end the turn and wait for the reply (P-042)');
+  // P-057: a picked message may stay unanswered; the thread timer rings the sender after the reply window anyway.
+  if (REPLY_WINDOW_MS[finalLevel] && !replyTo && data.id && !data.queued && ctx.brainDir && ctx.thread && !inSubagent()) {
+    const now = Date.now();
+    const cur = activeTimer(readThreadState(ctx.brainDir, ctx.thread), now);
+    if (!cur || Date.parse(cur.at) > now + REPLY_WINDOW_MS[finalLevel]) {
+      const t = setTimer(ctx.brainDir, ctx.thread, { delayMs: REPLY_WINDOW_MS[finalLevel], then: `check the reply to ${data.id} (${finalLevel} to ${destination}); without one continue on your own decision or send the question elsewhere`, forId: data.id }, now);
+      out(`timer set: ${t.at} in case ${data.id} gets no reply (P-057)`);
+    }
+  }
+  if (finalLevel === 'blocker' && !replyTo) out('blocker sent: continue with work that does not need the answer (or your recommended assumption, say it); the reply or the timer wakes you; a message never stops the work (P-057)');
 }
 
 function cmdNotices(ctx) {
@@ -232,7 +295,7 @@ function cmdRegister(ctx) {
 
 try {
   const ctx = loadContext({ project: args.project, requireBrain: cmd !== 'status' });
-  const handlers = { status: cmdStatus, count: cmdCount, list: cmdList, receive: cmdReceive, ack: cmdAck, send: cmdSend, notices: cmdNotices, decide: cmdDecide, register: cmdRegister };
+  const handlers = { status: cmdStatus, count: cmdCount, list: cmdList, receive: cmdReceive, ack: cmdAck, settle: cmdSettle, send: cmdSend, notices: cmdNotices, decide: cmdDecide, register: cmdRegister };
   if (!handlers[cmd]) fail('usage: comms.mjs status|count|list|receive|ack|send|notices|decide|register');
   if (cmd !== 'status' && !commsSettings(ctx).enabled) fail(`comms off: ${commsSettings(ctx).reason}; see README "Pošta" to enable it`, 2);
   handlers[cmd](ctx);

@@ -211,7 +211,7 @@ export function mailNoticeLine(mail, max = 10) {
  * outage (`queued: true`); `open` is never queued. An older client without `--opened-at` (usage error) gets the call again
  * without it. Never throws.
  */
-export function recordTurn(ctx, state, held = [], { openedAt = null, next = null } = {}) {
+export function recordTurn(ctx, state, held = [], { openedAt = null, next = null, resumeAt = null } = {}) {
   try {
     const s = commsSettings(ctx);
     if (!s.enabled || !ctx.thread) return { ok: false, skipped: true };
@@ -224,9 +224,13 @@ export function recordTurn(ctx, state, held = [], { openedAt = null, next = null
     const timeoutMs = Math.min(s.waitMs, 1000);
     // P-026: the next step of the held work topic goes with `closed`; wake rings the thread to continue it.
     if (state === 'closed' && next) args.push('--next', String(next).slice(0, 300));
+    // P-057: the thread timer; wake rings the thread at resume_at with the next step.
+    if (state === 'closed' && next && resumeAt) args.push('--resume-at', String(resumeAt));
     const withOpened = state === 'closed' && openedAt ? [...args, '--opened-at', String(openedAt)] : args;
     let res = runClient(ctx, withOpened, { timeoutMs });
     if (!res.ok && res.code === 1 && withOpened !== args && /opened-at/.test(String(res.error || ''))) res = runClient(ctx, args, { timeoutMs });
+    // An older mail client without --resume-at: the step still goes (rung after the usual delay).
+    if (!res.ok && res.code === 1 && resumeAt && /resume-at/.test(String(res.error || ''))) res = runClient(ctx, withOpened.filter((a, i, all) => a !== '--resume-at' && all[i - 1] !== '--resume-at'), { timeoutMs });
     if (res.ok && res.data && res.data.ok === false) return { ok: false, ...res.data };
     return res.ok ? { ok: true, ...(res.data || {}) } : { ok: false, unavailable: !!res.unavailable, error: res.error };
   } catch (err) {

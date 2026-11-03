@@ -83,17 +83,17 @@ test('exception: immutable refused, written per layer; rule saved; handover only
     r = fx.run('save.mjs', ['exception', 'P-034', '--wording', 'bash allowed here', '--reason', 'legacy', '--layer', 'machine', '--machine', 'Box One']);
     assert.equal(r.status, 0, r.out);
     assert.match(fx.read('exceptions/machine-box-one.md'), /### P-034\nZnenie: bash allowed here\nDôvod: legacy/);
-    r = fx.run('save.mjs', ['rule', 'tests', '--content', 'Každá zmena v src/ MUSÍ mať test.']);
+    r = fx.run('save.mjs', ['rule', 'tests', '--content', 'Každá zmena v src/ MUSÍ mať test.', '--enforced-by', 'hooks/pre-tool-use.mjs']);
     assert.equal(r.status, 0, r.out); assert.match(fx.read('rules/tests.md'), /key: rule-tests/);
     // Overlapping rules: move the boundary into one rule, never a rule with precedence over another (operator 2026-11-02).
     r = fx.run('save.mjs', ['rule', 'override', '--content', 'Diery oprav hneď. Má prednosť pred sensitive-approval.']);
     assert.notEqual(r.status, 0); assert.match(r.out, /move the boundary into one rule/);
-    // P-022: a rule that pushes the assembled rules over the limit tells the agent to condense them itself.
-    r = fx.run('save.mjs', ['rule', 'long', '--content', 'x'.repeat(11000)]);
-    assert.equal(r.status, 0, r.out); assert.match(r.stdout, /limit: rules \d+ chars > 10000: condense your project rules after the current unit of work \(skill workflow:consolidate; mandated by the workflow, not out of scope, P-002\)/);
+    // A rule must not grow the rules over the limit (operator 2026-11-03): refused, the agent condenses or uses code.
+    r = fx.run('save.mjs', ['rule', 'long', '--content', 'x'.repeat(11000), '--enforced-by', 'hooks/pre-tool-use.mjs']);
+    assert.equal(r.status, 1); assert.match(r.stderr, /rules would have \d+ chars > 10000: a rule must not grow the rules over the limit/);
+    assert.ok(!fx.exists('rules/long.md'));
     const rep = fx.run('consolidate.mjs', ['report']);
-    assert.match(rep.stdout, /^rules: \d+ chars, \d+ lines; project rules .*: long 11\d\d\d, tests \d+$/m, rep.out);
-    assert.equal(fx.run('save.mjs', ['rule', 'long', '--remove', '--reason', 'test']).status, 0);
+    assert.match(rep.stdout, /^rules: \d+ chars, \d+ lines; project rules .*: tests \d+$/m, rep.out);
     r = fx.run('save.mjs', ['rule', 'tests', '--remove']);
     assert.equal(r.status, 1); assert.match(r.stderr, /needs --reason/);
     // P-007: steps or commands are a procedure; save refuses them as a rule and points to a skill (Bob 2026-11-02).
@@ -102,7 +102,7 @@ test('exception: immutable refused, written per layer; rule saved; handover only
     r = fx.run('save.mjs', ['rule', 'deploy', '--content', 'Po vydaní spusti `git pull --ff-only` v klone.']);
     assert.equal(r.status, 1); assert.match(r.stderr, /reads as a procedure \(command `git pull/);
     assert.ok(!fx.exists('rules/deploy.md'));
-    r = fx.run('save.mjs', ['rule', 'gate', '--content', 'Zmenu služby MUSÍŠ nasadiť cez skill `aktualizacia-sluzieb`; do `~/.claude/` NESMIEŠ zapisovať.']);
+    r = fx.run('save.mjs', ['rule', 'gate', '--content', 'Zmenu služby MUSÍŠ nasadiť cez skill `aktualizacia-sluzieb`; do `~/.claude/` NESMIEŠ zapisovať.', '--enforced-by', 'hooks/pre-tool-use.mjs']);
     assert.equal(r.status, 0, r.out); assert.match(r.stdout, /rule check \(P-007\).*is a skill/);
     r = fx.run('save.mjs', ['rule', 'nope', '--remove', '--reason', 'x']);
     assert.equal(r.status, 1); assert.match(r.stderr, /does not exist/);
@@ -128,6 +128,10 @@ test('skill --script: the script is stored next to SKILL.md in one brain commit;
     assert.equal(r.status, 0, r.out);
     assert.equal(fx.read('skills/agentic/release-x/release.mjs'), fs.readFileSync(src, 'utf8'));
     assert.match(r.out, /script runs as: node \/.+\/\.claude\/skills\/release-x\/release\.mjs/);
+    const sh = path.join(fx.root, 'sync.sh');
+    fs.writeFileSync(sh, 'echo ok\n');
+    const r2 = fx.run('save.mjs', ['skill', 'release-x', '--content', 'sh', '--origin', 'routine', '--script', sh]);
+    assert.match(r2.out, /script runs as: sh \/.+\/\.claude\/skills\/release-x\/sync\.sh/, 'a shell script is not run by node');
     fs.writeFileSync(src, '#!/usr/bin/env node\nconsole.log("v2");\n');
     r = fx.run('save.mjs', ['skill', 'release-x', '--content', 'v2', '--origin', 'routine', '--script', src]);
     assert.equal(r.status, 0, r.out);
@@ -170,5 +174,64 @@ test('skill --replace: the body is replaced by the corrected steps; without it t
     assert.match(fx.read('skills/agentic/fix-x/SKILL.md'), /\na\|b step\n/);
     r = fx.run('save.mjs', ['skill', 'nope-x', '--sed', 's/a/b/']);
     assert.equal(r.status, 1); assert.match(r.stderr, /does not exist/);
+  } finally { fx.cleanup(); }
+});
+
+test('rule names its enforcement: --enforced-by <file>[:<symbol>] is checked, --unenforced needs a reason, a rewrite keeps it (operator 2026-11-02)', () => {
+  const fx = setup();
+  try {
+    let r = fx.run('save.mjs', ['rule', 'gate', '--content', 'Do src/ NESMIEŠ zapisovať bez testu.']);
+    assert.notEqual(r.status, 0); assert.match(r.out, /needs --enforced-by .* or --unenforced/);
+    r = fx.run('save.mjs', ['rule', 'gate', '--content', 'Do src/ NESMIEŠ zapisovať bez testu.', '--unenforced', 'code cannot see the intent of the change']);
+    assert.notEqual(r.status, 0); assert.match(r.out, /a new rule needs --enforced-by/);
+    r = fx.run('save.mjs', ['rule', 'gate', '--content', 'Do src/ NESMIEŠ zapisovať bez testu.', '--enforced-by', 'hooks/missing.mjs']);
+    assert.notEqual(r.status, 0); assert.match(r.out, /not found/);
+    r = fx.run('save.mjs', ['rule', 'gate', '--content', 'Do src/ NESMIEŠ zapisovať bez testu.', '--enforced-by', 'hooks/pre-tool-use.mjs:noSuchSymbol']);
+    assert.notEqual(r.status, 0); assert.match(r.out, /noSuchSymbol does not occur/);
+    r = fx.run('save.mjs', ['rule', 'gate', '--content', 'Do src/ NESMIEŠ zapisovať bez testu.', '--enforced-by', 'hooks/pre-tool-use.mjs:topicOwnedCheck']);
+    assert.equal(r.status, 0, r.out);
+    assert.match(fx.read('rules/gate.md'), /enforced_by: \["hooks\/pre-tool-use.mjs:topicOwnedCheck"\]|enforced_by: \[hooks\/pre-tool-use.mjs:topicOwnedCheck\]/);
+    r = fx.run('save.mjs', ['rule', 'gate', '--content', 'Do src/ NESMIEŠ nič zapisovať bez testu.']);
+    assert.equal(r.status, 0, r.out);
+    assert.match(fx.read('rules/gate.md'), /topicOwnedCheck/, 'a rewrite keeps the recorded enforcement');
+    r = fx.run('save.mjs', ['rule', 'gate', '--content', 'x', '--enforced-by', 'hooks/pre-tool-use.mjs', '--unenforced', 'both given at once here']);
+    assert.notEqual(r.status, 0); assert.match(r.out, /exclude each other/);
+    r = fx.run('save.mjs', ['rule', 'gate', '--content', 'Do src/ NESMIEŠ nič zapisovať bez testu.', '--unenforced', 'short']);
+    assert.notEqual(r.status, 0); assert.match(r.out, /at least 20 characters/);
+  } finally { fx.cleanup(); }
+});
+
+test('new rule gate (operator 2026-11-03): an overlap is extended in the existing rule, a conflict resolved first, code replaces a rule it can enforce', () => {
+  const fx = setup();
+  const judge = (o) => ({ WORKFLOW_RULE_JUDGE: 'on', WORKFLOW_RULE_JUDGE_CMD: `cat >/dev/null; echo '${JSON.stringify({ overlaps: [], conflicts: [], code_instead: '', ...o })}'` });
+  const save = (name, content, env, extra = []) => fx.run('save.mjs', ['rule', name, '--content', content, '--enforced-by', 'hooks/stop.mjs', ...extra], { env });
+  try {
+    let r = save('waiting', 'Čakať bez budíka NESMIEŠ: na odpoveď operátora, na správu ani na pracovníka.', judge({}));
+    assert.equal(r.status, 0, r.out);
+    r = save('no-idle', 'Prázdne čakanie NESMIEŠ.', judge({ overlaps: [{ id: 'waiting', how: 'same subject' }, { id: 'P-057', how: 'alarm' }, { id: 'ghost', how: 'not a rule' }] }));
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /rule no-idle overlaps waiting \(same subject\); P-057 \(alarm\): extend or narrow the existing rule instead of a new one \(save\.mjs rule waiting --content "<reworded>"; P-057 is a workflow principle: report it to maintainer\/workflow-dev/);
+    assert.doesNotMatch(r.stderr, /ghost/, 'ids the judge made up are dropped');
+    r = save('no-idle', 'Prázdne čakanie NESMIEŠ.', judge({ overlaps: [{ id: 'waiting', how: 'same subject' }] }), ['--distinct', 'waiting: short']);
+    assert.equal(r.status, 1, 'a --distinct without a reason does not answer the overlap');
+    r = save('no-idle', 'Prázdne čakanie NESMIEŠ.', judge({ overlaps: [{ id: 'waiting', how: 'same subject' }] }), ['--distinct', 'waiting: that one is about alarms, this one about idle loops']);
+    assert.equal(r.status, 0, r.out);
+    r = save('stop-on-steer', 'Na steer zastav prácu.', judge({ conflicts: [{ id: 'waiting', how: 'stop vs continue' }] }), ['--distinct', 'waiting: whatever the reason may be here']);
+    assert.equal(r.status, 1); assert.match(r.stderr, /conflicts with waiting \(stop vs continue\): two rules must not order different behaviour; resolve the conflict in that rule first/);
+    r = fx.run('save.mjs', ['rule', 'waiting', '--content', 'Čakať bez budíka NESMIEŠ, ani po steer.'], { env: judge({ conflicts: [{ id: 'no-idle', how: 'x' }] }) });
+    assert.equal(r.status, 1, 'a rewrite that conflicts is refused too');
+    r = fx.run('save.mjs', ['rule', 'waiting', '--content', 'Čakať bez budíka NESMIEŠ: na odpoveď, na správu ani na pracovníka.'], { env: judge({ conflicts: [{ id: 'no-idle', how: 'x' }] }) });
+    assert.equal(r.status, 0, `condensing (no new words) is not judged again: ${r.stderr}`);
+    const seen = path.join(fx.root, 'judge-prompt.txt');
+    r = fx.run('save.mjs', ['rule', 'waiting', '--content', 'Čakať bez budíka NESMIEŠ: na odpoveď operátora, na správu ani na pracovníka, ani po steer.'], { env: { WORKFLOW_RULE_JUDGE: 'on', WORKFLOW_RULE_JUDGE_CMD: `cat > ${seen}; echo '{"overlaps":[],"conflicts":[],"code_instead":""}'` } });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(fs.readFileSync(seen, 'utf8'), /# Current wording of this rule[^\n]*\nČakať bez budíka NESMIEŠ: na odpoveď, na správu ani na pracovníka\.\nReport only overlaps and conflicts the proposed wording adds/);
+    r = save('port', 'Port 3773 NESMIEŠ použiť.', judge({ code_instead: 'A hook can refuse the port.' }));
+    assert.equal(r.status, 1); assert.match(r.stderr, /rule port can be enforced by code alone: A hook can refuse the port\. Do that/);
+    r = save('port', 'Port 3773 NESMIEŠ použiť.', judge({ code_instead: 'A hook can refuse the port.' }), ['--needs-text', 'the agent picks the port before any hook sees it']);
+    assert.equal(r.status, 0, r.out);
+    // Without a judge the word-stem similarity still finds the rule on the same subject.
+    r = save('alarm-wait', 'Čakať na odpoveď bez budíka NESMIEŠ, ani na správu.', { WORKFLOW_RULE_JUDGE: 'off' });
+    assert.equal(r.status, 1); assert.match(r.stderr, /overlaps waiting \(shared terms: .*\[lexical\]/);
   } finally { fx.cleanup(); }
 });

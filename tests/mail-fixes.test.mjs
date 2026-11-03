@@ -167,3 +167,57 @@ test('free point during an outage: "mail: unknown (comms unavailable)" is said a
     assert.ok((fx.threadState().free_point || []).includes('eta'), 'free point recorded during the outage');
   } finally { fx.cleanup(); }
 });
+
+test('reply to a closed topic: the picked assist is settled with the new-mail route, so the Stop hook stops reminding (alice 2026-11-02)', () => {
+  const fx = stubbed({ messages: [], send_closed: true });
+  try {
+    fx.setThreadState({ picked_assist: [{ id: 'm7', from: 'bob', at: '2026-11-02T21:39:37.658Z' }] });
+    const r = fx.run('comms.mjs', ['send', '--reply-to', 'm7', '--text', 'prijaté']);
+    assert.notEqual(r.status, 0);
+    assert.match(r.out, /uzavretá[\s\S]*assist m7 settled: the sender's topic is closed/);
+    assert.equal((fx.threadState().picked_assist || []).length, 0);
+  } finally { fx.cleanup(); }
+});
+
+
+test('assist without a reply path is not waiting for an answer; settle closes one answered another way (Bob 2026-11-03)', () => {
+  const fx = stubbed({ messages: [
+    { id: 'e1', level: 'assist', sender: 'myserver', text: 'server event' },
+    { id: 'h1', level: 'assist', sender: 'alice', thread_id: 'mcp:h', text: 'from a thread' },
+    { id: 't1', level: 'assist', sender: 'carol', from_project: 'carol', from_topic: 'x', text: 'from a topic' },
+  ] });
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
+    assert.equal(fx.run('comms.mjs', ['receive']).status, 0);
+    assert.deepEqual(fx.threadState().picked_assist.map((w) => w.id), ['h1', 't1'], 'a server event has nobody to answer');
+    let r = fx.run('comms.mjs', ['settle', '--id', 'h1,zz']);
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.out, /settled: h1; not picked here: zz/);
+    assert.deepEqual(fx.threadState().picked_assist.map((w) => w.id), ['t1']);
+    // an old entry without a reply path (picked before this fix): the refused reply settles it
+    fx.stub.set({ messages: [], send_no_path: true });
+    r = fx.run('comms.mjs', ['send', '--reply-to', 't1', '--text', 'ok']);
+    assert.notEqual(r.status, 0);
+    assert.match(r.out, /assist t1 settled: it has no reply path/);
+    assert.equal(fx.threadState().picked_assist.length, 0);
+  } finally { fx.cleanup(); }
+});
+
+test('sender topic: --from a held topic, a reply from the topic the original was addressed to, never the alphabetical first (alice 2026-11-03)', () => {
+  const fx = stubbed({ messages: [] });
+  try {
+    for (const id of ['alpha', 'zulu']) assert.equal(fx.run('topic.mjs', ['create', id, '--subject', id]).status, 0);
+    const fromOf = () => { const a = fx.stub.calls('send').at(-1); return a[a.indexOf('--from-topic') + 1]; };
+    let r = fx.run('comms.mjs', ['send', '--level', 'assist', '--to', 'other', '--from', 'zulu', '--text', 'x']);
+    assert.equal(r.status, 0, r.out);
+    assert.equal(fromOf(), 'zulu');
+    assert.match(r.out, /; from zulu \(this thread also holds alpha/);
+    r = fx.run('comms.mjs', ['send', '--level', 'assist', '--to', 'other', '--from', 'nope', '--text', 'x']);
+    assert.notEqual(r.status, 0);
+    assert.match(r.out, /does not hold that topic; held: .*alpha/);
+    fx.setThreadState({ picked_assist: [{ id: 'm9', from: 'bob', topic: 'zulu', at: '2026-11-03T08:00:00Z' }] });
+    r = fx.run('comms.mjs', ['send', '--reply-to', 'm9', '--text', 'ok']);
+    assert.equal(r.status, 0, r.out);
+    assert.equal(fromOf(), 'zulu');
+  } finally { fx.cleanup(); }
+});

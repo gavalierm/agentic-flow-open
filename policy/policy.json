@@ -33,7 +33,23 @@
       "tail",
       "git status",
       "git log",
-      "git diff"
+      "git diff",
+      "cd",
+      "grep",
+      "sed -n",
+      "wc",
+      "echo",
+      "printf",
+      "cut",
+      "tr",
+      "sort",
+      "uniq",
+      "jq",
+      "awk",
+      "read",
+      "test",
+      "[",
+      "[["
     ],
     "sequence_min_length": 2,
     "sequence_max_length": 5,
@@ -144,6 +160,7 @@
       "broken",
       "wrong"
     ],
+    "finish_prompts": ["finish", "hotovo", "uzavri to", "uzavri", "uzavri tému", "done", "workflow:finish"],
     "save_phrases": [
       "ulož",
       "zapamätaj",

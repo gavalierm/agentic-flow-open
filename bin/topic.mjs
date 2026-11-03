@@ -1,12 +1,13 @@
 #!/usr/bin/env node
-// topic.mjs create <id> --subject "..." [--kind code|discussion] [--no-claim] [--no-copy] [--for-thread <new thread id>] [--here]
+// topic.mjs create <id> --subject "..." [--task "<operator's task>"] [--kind code|discussion] [--no-claim] [--no-copy] [--for-thread <new thread id>] [--here | --new-thread]
 //           claim <id> [--force --operator-approved] [--mode operator|auto]
 //           release <id> [--force --operator-approved]
 //           main [--force --operator-approved]   persona main thread (topic main, P-045)
+//           thread <id> [--task ".."] [--mode operator|auto]   new T3 thread for a free topic (P-036)
 //           list | status | copy <id>
 import { parseArgs, fail } from '../scripts/util.mjs';
 import { loadContext } from '../scripts/config.mjs';
-import { createTopic, claimTopic, claimMain, releaseTopic, listTopics, heldTopics, ensureCodeCopy, readTopic } from '../scripts/topic.mjs';
+import { createTopic, startThreadForTopic, claimTopic, claimMain, releaseTopic, listTopics, heldTopics, ensureCodeCopy, readTopic } from '../scripts/topic.mjs';
 import { topicLine } from '../scripts/index.mjs';
 
 const args = parseArgs(process.argv.slice(2));
@@ -17,9 +18,10 @@ try {
   const ctx = loadContext({ project: args.project });
   if (cmd === 'create') {
     if (!id) fail('usage: topic.mjs create <id> --subject "..." [--kind code|discussion]');
-    const res = createTopic(ctx, { id, subject: args.subject, kind: args.kind || 'discussion', mode: args.mode, claim: !args['no-claim'], copy: !args['no-copy'], forThread: args['for-thread'] || null,
-      // In T3 a new topic gets its own thread (P-036); --here keeps the old way: this thread claims it.
-      newThread: !!process.env.T3CODE_THREAD_ID && !args.here && !args['no-claim'] && !args['for-thread'] });
+    const res = createTopic(ctx, { id, subject: args.subject, kind: args.kind || 'discussion', mode: args.mode, claim: !args['no-claim'], copy: !args['no-copy'], forThread: args['for-thread'] || null, task: args.task || null, explicitProject: !!args.project,
+      // In T3 a new topic gets its own thread (P-036) when this thread already works on a topic (or --new-thread); a
+      // thread without a topic takes it itself: the operator gave the task here (alice 2026-11-03: a duplicate thread).
+      newThread: !!process.env.T3CODE_THREAD_ID && !args.here && !args['no-claim'] && !args['for-thread'] && (!!args['new-thread'] || heldTopics(ctx.brainDir, ctx.thread).length > 0) });
     out(`topic ${id} created (${res.topic.kind})`);
     if (res.thread) out(`thread ${res.thread} started with title ${id}; it holds the topic (this thread does not)`);
     if (res.claim) out(res.claim.ok ? `${res.claim.assigned ? `assigned to ${res.claim.holder.thread}` : `claimed by ${ctx.thread}`}${res.claim.pushed ? ', pushed' : ''}` : res.claim.reason);
@@ -27,6 +29,12 @@ try {
     if (res.copy) out(`code copy: ${res.copy.path} (branch ${res.copy.branch})`);
     if (res.write.unpushed) out(`unpushed: ${res.write.unpushed}`);
     if (res.claim && !res.claim.ok) process.exit(1);
+  } else if (cmd === 'thread') {
+    if (!id) fail('usage: topic.mjs thread <id> [--task ".."] [--mode operator|auto]');
+    const res = startThreadForTopic(ctx, id, { task: args.task || null, mode: args.mode });
+    if (!res.ok) fail(res.reason);
+    out(`thread ${res.thread} started with title ${id}; it holds the topic${res.claim.pushed ? ', pushed' : ''}`);
+    if (res.claim.comms && !res.claim.comms.ok && !res.claim.comms.skipped) out(`comms: topic not registered (${res.claim.comms.reason})`);
   } else if (cmd === 'claim') {
     if (!id) fail('usage: topic.mjs claim <id> [--force --operator-approved]');
     const res = claimTopic(ctx, id, { force: !!args.force, operatorApproved: !!args['operator-approved'], mode: args.mode });

@@ -73,3 +73,20 @@ test('rotation: sequences older than 30 days are dropped; failures older than 7 
     assert.ok(!fs.existsSync(path.join(fx.brain, 'local', 'log-buffer', 's1.jsonl')), 'buffer cleared after flush');
   } finally { fx.cleanup(); }
 });
+
+test('P-030: quoted text, heredoc bodies and reading commands are not sequence steps', async () => {
+  const { normalizeCommand, isReadonly } = await import('../scripts/logs.mjs');
+  const policy = JSON.parse(fs.readFileSync(new URL('../policy/policy.json', import.meta.url)));
+  const steps = (c) => normalizeCommand(c, policy).filter((x) => !isReadonly(x, policy));
+  assert.deepEqual(steps(`cd /x && git add -A && git commit -q -m "a; the b\n\nc; d" && git push`), ['git add', 'git commit', 'git push']);
+  assert.deepEqual(steps(`grep -n x f; cd y && sed -n 1,5p a && sed -i s/a/b/ f`), ['sed']);
+  assert.deepEqual(steps(`python3 - <<EOF\nimport x; the=1\nEOF\nnpm test`), ['python3', 'npm test']);
+  // shell keywords are syntax, text filters only read (Bob 2026-11-03: `for+echo`, `tr+echo` proposed as skills)
+  assert.deepEqual(steps('for f in a b; do echo $f; npm test; done'), ['npm test']);
+  assert.deepEqual(steps('if [ -f x ]; then rm x; fi; while read l; do printf "%s" $l | cut -c1-5 | tr a b; done < f'), ['rm']);
+});
+
+test('sequence normalization skips shell groups and keeps the program of $(...) assignments', async () => {
+  const { normalizeCommand } = await import('../scripts/logs.mjs');
+  assert.deepEqual(normalizeCommand('out=$(npm test 2>&1) || { echo x; exit 1; }; ls', { logs: { subcommand_programs: ['npm'] } }), ['npm test', 'echo', 'ls']);
+});

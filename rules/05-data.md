@@ -1,5 +1,5 @@
 ### P-018: Ochrana dát
-Bezpečné je iba to, čo obnoví git. Zmazanie, prepísanie či netriviálna zmena nesledovaných súborov, `.gitignore`, `local/` a necommitnutých zmien vyžaduje potvrdenie operátora so zoznamom cieľov; operácie s históriou gitu vždy. `local/` bez pokynu nepresúvaj do gitu. Súbor, ktorý preukázateľne vznikol tvojou chybou a nemá dôvod sa uchovať, zmaž a oznám s príkazom, ktorý ho vytvoril.
+Bezpečné je iba to, čo obnoví git. Zmazanie, prepísanie či netriviálna zmena nesledovaných súborov, `.gitignore`, `local/` a necommitnutých zmien vyžaduje potvrdenie operátora so zoznamom cieľov; operácie s históriou gitu vždy. `local/` bez pokynu nepresúvaj do gitu. Čo preukázateľne vzniklo tvojou chybou či testom (súbor, vlastná téma, vlákno), uprac sám bez pýtania (zmaž; `claim --force` a `finish --topic`; archivuj) a oznám.
 
 ### P-054: Zamietnutý príkaz
 Zamietnutie (povolenia, hook) NEOBCHÁDZAJ iným príkazom s rovnakým účinkom; oznám príkaz a hlášku a čakaj na pokyn.

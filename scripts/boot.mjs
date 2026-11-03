@@ -54,7 +54,7 @@ export function rulesHash(text) {
   return createHash('sha1').update(String(text || '')).digest('hex').slice(0, 16);
 }
 
-export function buildBootContext(ctx, { source = 'startup', harness = 'claude-code', includeRules = true } = {}) {
+export function buildBootContext(ctx, { source = 'startup', harness = 'claude-code', includeRules = true, t3Note = null } = {}) {
   const limits = ctx.policy?.limits || {};
   const notices = [];
   const parts = [];
@@ -79,10 +79,8 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
     const held = info.held;
     if (held.length && held[0].handover) status += `\nHandover (primárny podklad, P-026):\n${held[0].handover.trim().replace(/^## /gm, '### ')}`;
   }
-  // T3 (claudeAgent) keeps resuming the session id it opened with; after /clear the conversation moves to a new id,
-  // so once T3 closes the idle query the thread fails "No conversation found with session ID" for good (T3 0.1.6).
-  // /clear is a local command: UserPromptSubmit never sees it, SessionStart:clear is the first point we can act.
-  if (source === 'clear' && process.env.T3CODE_THREAD_ID) status += '\nT3 /clear: toto vlákno sa po nečinnosti alebo reštarte T3 nedá obnoviť (No conversation found with session ID). V prvej odpovedi to oznám operátorovi jednou vetou: v T3 nepoužívať /clear, ďalšiu prácu otvoriť v novom vlákne; stav témy drž v handoveri.';
+  // T3-WORKAROUND(t3-clear-cursor) T3 (claudeAgent) keeps resuming the session id it opened with (t3code#24152); session-start redirects it (t3-clear.mjs).
+  if (t3Note) status += `\n${t3Note}`;
   parts.push(`${BOOT_MARKERS[1]}\n${status}`);
 
   // 4-6. indexes and open topics
@@ -111,7 +109,7 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
   if (!ctx.brainDir) {
     const rel = ctx.brainInfo?.brainRel;
     version.push(!ctx.brainInfo
-      ? `brain missing: no ${WORKFLOW_CONFIG} in project; run adapter (node <plugin>/bin/adapter.mjs claude-code) and brain-init (node <plugin>/bin/brain-init.mjs ../<brain-name>) after operator approval (P-024)`
+      ? `brain: none (optional, P-024): project without its own brain; do not propose one, it is created only on the operator's instruction`
       : ctx.brainInfo.error || `brain not found at ${rel}; propose: node <plugin>/bin/brain-init.mjs ${rel} (only after operator approval, P-024)`);
   }
   version.push(...notices);
@@ -144,7 +142,7 @@ function freeTopics(ctx) {
 }
 
 /**
- * The harness UI (T3) does not show hook messages, so the agent shows the block (P-050): verbatim, as the start of its
+ * T3-WORKAROUND(hook-message-hidden) The harness UI (T3) does not show hook messages, so the agent shows the block (P-050): verbatim, as the start of its
  * first reply only; without a held topic the operator's answer to the question decides the topic.
  */
 export function statusBlockInstruction(block, unknown = false) {

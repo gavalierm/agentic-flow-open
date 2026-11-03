@@ -145,7 +145,7 @@ test('turn record: opened_at from open goes back with closed; older client witho
 });
 
 test('P-030: a sequence proposal is signalled once per thread, not at every Stop', () => {
-  assert.equal(proposalKey('sequence a+b 3x: propose a skill with a script (P-030)'), 'sequence a+b');
+  assert.equal(proposalKey('sequence a+b 3x: create a skill with a script or add the script to the existing skill yourself, no operator approval (P-030)'), 'sequence a+b');
   assert.equal(proposalKey('unpushed: 2'), null);
   const fx = setup();
   try {
@@ -153,7 +153,7 @@ test('P-030: a sequence proposal is signalled once per thread, not at every Stop
     const turn = (s) => { bash('git fetch origin', s); bash('npm test', s); fx.hook('stop.mjs', { session_id: s }); };
     for (const s of ['s1', 's2', 's3']) turn(s);
     let r = fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
-    assert.match(r.context, /sequence git-fetch\+npm-test 3x: propose a skill/);
+    assert.match(r.context, /sequence git-fetch\+npm-test 3x: create a skill .*no operator approval/);
     assert.deepEqual(fx.read('local/threads/a1.json').includes('sequence git-fetch+npm-test'), true);
     // Same proposal seen again (e.g. the log lost its count after a merge): not signalled again in this thread.
     fx.hook('stop.mjs', { session_id: 'x' });
@@ -161,7 +161,7 @@ test('P-030: a sequence proposal is signalled once per thread, not at every Stop
     fs.writeFileSync(path.join(fx.brain, 'logs', 'sequences.log'), '');
     for (const s of ['s4', 's5', 's6']) turn(s);
     r = fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
-    assert.doesNotMatch(r.context, /propose a skill/);
+    assert.doesNotMatch(r.context, /sequence git-fetch/);
     assert.ok(state.proposed.includes('sequence git-fetch+npm-test'));
   } finally { fx.cleanup(); }
 });
@@ -180,5 +180,52 @@ test('P-042 Stop: a picked assist without an answer is one queued line, never a 
     assert.equal(queued.length, 1, 'one line, not one per stop');
     set({ turn_source: 'wake' });
     assert.deepEqual(fx.hook('stop.mjs', {}).json, {}, 'a bell turn adds nothing');
+  } finally { fx.cleanup(); }
+});
+
+test('parsePrompt: the operator\'s bare "finish" / "hotovo" asks to close the whole topic (operator 2026-11-03)', () => {
+  for (const p of ['finish', 'Finish.', 'hotovo!', 'uzavri to', '/workflow:finish', 'workflow:finish'])
+    assert.equal(parsePrompt(p, policy).kind, 'finish', p);
+  for (const p of ['finish the tests first', 'je to hotovo?', 'kedy bude hotovo'])
+    assert.notEqual(parsePrompt(p, policy).kind, 'finish', p);
+});
+
+test('turn record: a reply that waits for or asks the operator does not hand the handover step to a continue ring (bob 2026-11-03)', () => {
+  const fx = stubbed({ messages: [] });
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'tk', '--subject', 'T', '--here']).status, 0);
+    assert.equal(fx.run('save.mjs', ['handover', 'tk', '--task', 'T', '--next', 'čakať na operátorove otázky']).status, 0);
+    fx.hook('user-prompt-submit.mjs', { prompt: 'vypíš otázky' });
+    fx.stub.reset();
+    // Bob's tracker thread was rung 76 s after this reply.
+    fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: 'Zostáva len čakanie na teba. Potrebujem od teba, čo z položiek mám urobiť:\n1. a\n2. b' });
+    let closed = fx.stub.calls('turn').filter((c) => val(c, 'state') === 'closed');
+    assert.equal(closed.length, 1);
+    assert.notEqual(val(closed[0], 'next'), 'čakať na operátorove otázky');
+    assert.ok(val(closed[0], 'resume-at'), 'only the timer rings the thread');
+    fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
+    fx.stub.reset();
+    fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: 'Hotové, prvá časť.' });
+    closed = fx.stub.calls('turn').filter((c) => val(c, 'state') === 'closed');
+    assert.equal(val(closed[0], 'next'), 'čakať na operátorove otázky');
+  } finally { fx.cleanup(); }
+});
+
+test('next step: the same handover step blocks the stop once per thread, not every turn (alice 2026-11-03, ai-news)', () => {
+  const fx = stubbed({ messages: [] });
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'an', '--subject', 'T', '--here']).status, 0);
+    assert.equal(fx.run('save.mjs', ['handover', 'an', '--task', 'T', '--next', 'skontrolovať zajtrajší report']).status, 0);
+    const stop = (prompt) => {
+      fx.hook('user-prompt-submit.mjs', { prompt });
+      const r = fx.hook('stop.mjs', { last_assistant_message: 'Report je hotový.' });
+      return r.json;
+    };
+    const first = stop('ukáž report');
+    assert.equal(first.decision, 'block');
+    assert.match(first.reason, /without a new message to the operator/);
+    assert.notEqual(stop('zúž zdroje').decision, 'block', 'the same step does not block again');
+    assert.equal(fx.run('save.mjs', ['handover', 'an', '--task', 'T', '--next', 'iný krok']).status, 0);
+    assert.equal(stop('ďalej').decision, 'block', 'a new step blocks once');
   } finally { fx.cleanup(); }
 });

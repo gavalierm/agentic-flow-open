@@ -1,6 +1,6 @@
 ---
 name: finish
-description: Použi, keď operátor povie „hotovo“, „uzavri to“ alebo jednotka práce skončila; s --topic keď je celá téma hotová a má sa zlúčiť do hlavnej vetvy a archivovať.
+description: Použi, keď operátor povie „finish“, „hotovo“, „uzavri to“ (celá téma, --topic), alebo keď sám uzatváraš jednotku práce a téma pokračuje (bez --topic).
 argument-hint: "[--topic] --verified \"<pozorovanie>\" [--procedures a,b] [--derivations k1,k2]"
 ---
 
@@ -8,7 +8,10 @@ argument-hint: "[--topic] --verified \"<pozorovanie>\" [--procedures a,b] [--der
 
 Skript: `node ${CLAUDE_PLUGIN_ROOT}/bin/finish.mjs` (iba držiteľ témy).
 
-## Jednotka práce
+Pokyn operátora „finish“, „hotovo“, „uzavri to“ (aj `/workflow:finish`) uzatvára **celú tému** (`--topic`), nie iba jednotku práce. Bez `--topic` uzatváraš iba ty sám jednotku práce, po ktorej téma pokračuje. Výnimka: téma `main` a vlákno bez témy (jednotka práce).
+nie „tému neuzatváram, lebo ste o to nepožiadali“ po pokyne „finish“, lebo operátor tým myslel celú tému (operátor 2026-11-03).
+
+## Jednotka práce (sám, téma pokračuje)
 1. Over výsledok jedným pozorovaním (spusti, pozri, porovnaj so zadaním). Bez toho skript odmietne; výsledok zapíš do `--verified "<čo si videl>"`.
 2. `finish.mjs --list` vypíše existujúce názvy v `procedures.log` a `derivations.log`. Použi existujúci názov, ak zodpovedá.
 3. Postupy s viac ako 3 krokmi bez skillu (`find`) uveď v `--procedures <action>-<subject>-<qualifier>,...` (anglicky, bez hodnôt inštancie). Odvodenia z viacerých zdrojov uveď v `--derivations <kľúč>,...`.

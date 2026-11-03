@@ -25,6 +25,7 @@ test('generated settings.json equals the policy translation; no inert keys; brai
     assert.ok(settings.permissions.deny.includes('Edit(../brain/**)'));
     assert.ok(settings.permissions.deny.includes('Edit(~/.claude/**)'));
     assert.ok(settings.permissions.ask.some((a) => a.startsWith('Bash(git reset --hard')));
+    assert.ok(!settings.permissions.ask.some((a) => a.startsWith('Bash(git checkout --')), 'restore of own edits is decided by the hook, a native rule would always ask');
     assert.ok(!settings.permissions.deny.some((d) => d.startsWith('Write(')), 'Write(path) rules never match; Edit covers Write');
     assert.equal(settings.permissions.defaultMode, undefined);
     assert.equal(settings.model, 'x', 'unmanaged keys preserved');
@@ -39,13 +40,38 @@ test('generated settings.json equals the policy translation; no inert keys; brai
   } finally { fx.cleanup(); }
 });
 
-test('project without .workflow.json gets one with a relative default; absolute brain path refused', () => {
+test('adapter targets the directory it runs in, not the session project (CLAUDE_PROJECT_DIR, exported WORKFLOW_PROJECT_DIR)', () => {
+  // alice 2026-11-03: run in agentic-flow from the alice session, the adapter regenerated alice.
+  const fx = setup();
+  try {
+    const other = path.join(fx.root, 'other');
+    initProject(other);
+    fs.rmSync(path.join(other, '.workflow.json'));
+    const before = fs.readFileSync(path.join(fx.project, '.workflow.json'), 'utf8');
+    const r = fx.run('adapter.mjs', ['claude-code'], { cwd: path.join(other, 'src'), env: { CLAUDE_PROJECT_DIR: fx.project, WORKFLOW_PROJECT_DIR: fx.project } });
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.stdout, new RegExp(`generated in ${other.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:`));
+    assert.ok(fs.existsSync(path.join(other, '.claude', 'settings.json')));
+    assert.ok(!fs.existsSync(path.join(fx.project, '.claude', 'settings.json')), 'session project untouched');
+    assert.equal(fs.readFileSync(path.join(fx.project, '.workflow.json'), 'utf8'), before);
+  } finally { fx.cleanup(); }
+});
+
+test('brain optional (P-024): without --brain no .workflow.json, no brain proposal; --brain sets it; absolute path refused', () => {
+  // alice 2026-11-03: agentic-flow got a default ../agentic-flow-brain that no session ever used.
   const fx = setup();
   try {
     const p = path.join(fx.root, 'fresh');
     initProject(p);
     fs.rmSync(path.join(p, '.workflow.json'));
     let r = fx.run('adapter.mjs', ['claude-code'], { cwd: p });
+    assert.equal(r.status, 0, r.out);
+    assert.ok(!fs.existsSync(path.join(p, '.workflow.json')), 'no default brain written');
+    assert.match(r.stdout, /no brain: project without its own brain \(optional, P-024\)/);
+    assert.doesNotMatch(r.stdout, /propose|and \.workflow\.json/);
+    const deny = JSON.parse(fs.readFileSync(path.join(p, '.claude', 'settings.json'), 'utf8')).permissions.deny;
+    assert.ok(!deny.some((d) => /null|<brain>/.test(d)), deny.join(','));
+    r = fx.run('adapter.mjs', ['claude-code', '--brain', '../fresh-brain'], { cwd: p });
     assert.equal(r.status, 0, r.out);
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(p, '.workflow.json'), 'utf8')), { brain: '../fresh-brain' });
     assert.match(r.stdout, /brain not found at \.\.\/fresh-brain/);

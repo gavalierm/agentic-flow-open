@@ -7,7 +7,7 @@ import { parseFrontmatter } from './frontmatter.mjs';
 
 export const LAYERS = ['harness', 'machine', 'project', 'local'];
 
-function splitBlocks(text) {
+export function splitBlocks(text) {
   const parts = String(text).replace(/\r\n/g, '\n').split(/^(?=### )/m);
   const preamble = parts[0]?.startsWith('### ') ? '' : parts.shift() || '';
   return { preamble, blocks: parts.filter((b) => b.startsWith('### ')).map((b) => ({ id: /^###\s+(P-\d{3})/.exec(b)?.[1] || null, text: b.replace(/\s*$/, '\n') })) };

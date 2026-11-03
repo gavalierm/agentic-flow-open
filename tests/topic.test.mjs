@@ -39,6 +39,24 @@ test('takeover needs --force and --operator-approved; idle time never takes over
   } finally { fx.cleanup(); }
 });
 
+test('a topic this thread created is its own to clean up: takeover and release --force without approval (P-018)', () => {
+  const fx = setup({ second: true });
+  try {
+    // alice 2026-11-03: test topic tt-free went to a new thread; cleaning it up waited for the operator.
+    assert.equal(fx.run('topic.mjs', ['create', 'own', '--subject', 'Own test']).status, 0);
+    assert.equal(JSON.parse(fx.git(fx.origin, 'show', 'main:topics/own/topic.json')).created_by, 'a1');
+    let r = fx.runB('topic.mjs', ['claim', 'own', '--force', '--operator-approved']);
+    assert.equal(r.status, 0, r.out);
+    r = fx.run('topic.mjs', ['claim', 'own', '--force']);
+    assert.equal(r.status, 0, r.out);
+    assert.equal(JSON.parse(fx.git(fx.origin, 'show', 'main:topics/own/holder.json')).thread, 'a1');
+    r = fx.runB('topic.mjs', ['claim', 'own', '--force']);
+    assert.equal(r.status, 1); assert.match(r.out, /operator-approved/);
+    r = fx.runB('topic.mjs', ['release', 'own', '--force']);
+    assert.equal(r.status, 1); assert.match(r.out, /operator-approved/);
+  } finally { fx.cleanup(); }
+});
+
 test('claim without a stable thread id and claim in a wake turn are refused; subject and id are validated', () => {
   const fx = setup();
   try {

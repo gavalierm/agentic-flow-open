@@ -4,6 +4,9 @@ import fs from 'node:fs';
 import { readHookInput, emit, contextOutput, isMain } from '../scripts/hooks-io.mjs';
 import { loadContext } from '../scripts/config.mjs';
 import { buildBootContext } from '../scripts/boot.mjs';
+import { readThreadState, writeThreadState } from '../scripts/config.mjs';
+import { installedWorkflow } from '../scripts/update-notice.mjs';
+import { handleT3Session } from '../scripts/t3-clear.mjs';
 
 export const HOOK_META = { event: 'SessionStart', class: 'boot', limit: '15000 chars', principles: ['P-021', 'P-022', 'P-024', 'P-026', 'P-038', 'P-050'] };
 
@@ -15,8 +18,25 @@ export function run(input) {
     return contextOutput('SessionStart', `## Workflow\nworkflow: cannot load context (${err.message})`);
   }
   exportProjectDir(ctx.projectDir);
-  const boot = buildBootContext(ctx, { source: input.source || 'startup' });
+  const boot = buildBootContext(ctx, { source: input.source || 'startup', t3Note: t3Session(ctx, input) });
+  // P-021: the revision this session loaded; the prompt and tool hooks announce a later update once.
+  if (ctx.brainDir && ctx.thread) {
+    try { const w = installedWorkflow(); writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), plugin_sha: w.sha, plugin_version: w.version }); } catch { /* state is best effort */ }
+  }
   return contextOutput('SessionStart', boot.text);
+}
+
+/** T3-WORKAROUND(t3-clear-cursor) T3 /clear workaround (t3code#24152): record T3's resume cursor, redirect it to the new session on clear. */
+export function t3Session(ctx, input) {
+  if (!process.env.T3CODE_THREAD_ID || !ctx.brainDir || !ctx.thread) return null;
+  try {
+    const state = readThreadState(ctx.brainDir, ctx.thread);
+    const r = handleT3Session(input, state, { thread: process.env.T3CODE_THREAD_ID, logDir: process.env.WORKFLOW_T3_PROVIDER_LOGS || undefined });
+    if (r.state !== state) writeThreadState(ctx.brainDir, ctx.thread, r.state);
+    return r.note;
+  } catch (err) {
+    return `T3 /clear: workaround failed (${err.message})`;
+  }
 }
 
 /**

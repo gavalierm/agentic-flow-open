@@ -47,6 +47,8 @@ Konvencie zápisu: `<brain>` je koreň brain repa (P-024), `<plugin>` je koreň 
 
   Popis skillu MUSÍ byť trigger formulovaný slovami situácie, v ktorej ho agent potrebuje, napríklad „Použi, keď voláš X API cez curl“. Ak sa chyba zopakuje napriek existujúcemu skillu, agent MUSÍ opraviť trigger alebo kroky skillu. Prevencia patrí do skillu, nie do zoznamu chýb.
 
+  Chybou je aj všetko, čo agent opíše ako „omylom“ (by mistake, nechtiac): hook Stop také odpoveď raz zablokuje, aj v ťahu z pošty, a agent ju spracuje týmto postupom (operátor, 2026-11-03).
+
   Skilly NESMÚ narastať donekonečna:
   - **Deduplikácia pri vzniku.** `save` pred vytvorením skillu zavolá `find` (P-031). Ak existuje skill pre ten istý nástroj, službu alebo druh práce, postup sa doplní do neho a nový skill nevznikne.
   - **Agregácia pri limite.** Pri prekročení limitu zoznamu skillov (P-022) beží `consolidate` (P-010) aj nad skillmi, iba v `<brain>/skills/agentic/` (P-032). Podobné skilly sa zlúčia do jedného a nahradený skill sa zmaže.
@@ -79,22 +81,22 @@ Konvencie zápisu: `<brain>` je koreň brain repa (P-024), `<plugin>` je koreň 
 - **Výhrady:**
   - **V1: Neurčené miesto pre špecifický obsah.** Vyriešené (agent, 2026-10-31): vrstva mimo workflow je brain (P-024) pre dáta a súbory výnimiek (P-035) pre odchýlky od pravidiel.
 
-### P-005: Opakovaná činnosť sa stáva návrhom skillu (procedure crystallization)
+### P-005: Opakovaná činnosť sa stáva skillom (procedure crystallization)
 
 - **Typ:** príkaz
-- **Problém:** Agent pri každej úlohe znova vymýšľa ten istý postup. Míňa kroky aj kontext a výsledok je zakaždým iný. Automaticky vytvorený skill by však nemusel zodpovedať tomu, ako prácu chápe operátor.
+- **Problém:** Agent pri každej úlohe znova vymýšľa ten istý postup. Míňa kroky aj kontext a výsledok je zakaždým iný. Čakanie na súhlas operátora so skillom zlepšovanie zastaví: návrh ostane visieť a postup sa vymýšľa ďalej (operátor 2026-11-03: schvaľovanie je antipattern proti autonómnemu zlepšovaniu).
 - **Pravidlo:**
   - **Evidencia.** Pri uzavretí jednotky práce skill `finish` (P-029) skontroluje, či práca obsahovala postup s viac ako 3 krokmi, ktorý nepokryl žiadny skill (overí sa cez `find`, P-031). Ak áno, zapíše riadok `<dátum> <názov postupu>` do `<brain>/logs/procedures.log`. Skript pred zápisom vypíše existujúce názvy z logu a agent použije existujúci názov, ak zodpovedá. Rotácia je rovnaká ako pri `sequences.log` (P-030).
   - **Názov postupu.** Má tvar `<action>-<subject>-<qualifier>` (anglicky, P-049). Je konkrétnejší ako druh práce, ale neobsahuje konkrétne hodnoty inštancie. Príklady: `deploy-web-docker-compose`, nie `deploy-service` (príliš všeobecné) ani `deploy-shop-v2-prod1` (inštancia); `review-pr-github`, nie `review` ani `pr-42`.
-  - **Návrh, nie automat.** Keď sa ten istý názov objaví tretíkrát, agent MUSÍ pripraviť **návrh skillu** a predložiť ho operátorovi. Skill NESMIE vytvoriť sám. Návrh obsahuje názov a popis-trigger (operátor ich môže upraviť; pôvodný názov z logu sa stane aliasom, P-031), kroky postupu a skript pre kroky bez úsudku.
-  - **Súhlas.** Skill vznikne cez `save` (P-013) a riadky postupu sa z logu zmažú.
-  - **Odmietnutie.** Zapíše sa ako rozhodnutie (P-008) „skill pre <postup> zamietnutý“ s `relates_to: <názov postupu>`. Pred každým návrhom agent cez `find` overí, či postup nebol zamietnutý. Zamietnutý postup sa už nenavrhuje.
-  - **Signál operátora má prednosť.** Keď operátor povie „tento postup sa mi páči“, návrh vznikne hneď, bez počítania (P-007).
+  - **Automat, bez súhlasu.** Keď sa ten istý názov objaví tretíkrát, agent MUSÍ skill sám vytvoriť alebo doplniť existujúci skill, ktorý postup pokrýva čiastočne (cez `find`, P-031). Operátora sa NESMIE pýtať na súhlas (P-059); vytvorenie oznámi jedným riadkom. Skill obsahuje názov a popis-trigger, kroky postupu a skript pre kroky bez úsudku.
+  - **Zápis.** Skill vznikne cez `save` (P-013) a riadky postupu sa z logu zmažú.
+  - **Odmietnutie.** Ak operátor skill zamietne, zapíše sa ako rozhodnutie (P-008) „skill pre <postup> zamietnutý“ s `relates_to: <názov postupu>` a skill sa zmaže. Pred vytvorením agent cez `find` overí, či postup nebol zamietnutý. Zamietnutý postup sa už nevytvára.
+  - **Signál operátora má prednosť.** Keď operátor povie „tento postup sa mi páči“, skill vznikne hneď, bez počítania (P-007).
 - **Platí pre:** uzavretie každej jednotky práce.
-- **Detekcia:** Názov postupu s tromi a viac výskytmi bez návrhu. Skill vytvorený bez súhlasu operátora. Návrh zamietnutého postupu.
+- **Detekcia:** Názov postupu s tromi a viac výskytmi bez skillu. Otázka operátorovi, či skill vytvoriť. Skill zamietnutého postupu.
 - **Vynútenie:** oboje. Evidenciu a výpis existujúcich názvov robí skript vo `finish`. Kontrolu zamietnutia robí `find`.
-- **Príklad:** Tretíkrát `deploy-web-docker-compose`. Agent navrhne: „Skill `deploy-web-docker-compose`, popis ‚Použi, keď nasadzuješ web cez docker compose‘, 5 krokov, skript `deploy.mjs <env>`. Chceš ho, prípadne pod iným názvom?“ Operátor odpovie „áno, volaj ho deploy-web“ a skill vznikne ako `deploy-web` s aliasom `deploy-web-docker-compose`.
-- **Zdroj:** operátor, 2026-10-31. Súvisí s P-003 a P-030.
+- **Príklad:** Tretíkrát `deploy-web-docker-compose`. Agent vytvorí skill `deploy-web-docker-compose` (popis „Použi, keď nasadzuješ web cez docker compose“, 5 krokov, skript `deploy.mjs <env>`) a oznámi: „uložený skill deploy-web-docker-compose“. Nesprávne: „Chceš ho, prípadne pod iným názvom?“
+- **Zdroj:** operátor, 2026-10-31; bez súhlasu operátor 2026-11-03. Súvisí s P-003 a P-030.
 - **Výnimka:** povolená
 - **Výhrady:**
   - **V1: Zistenie opakovania.** Vyriešené: postupy s úsudkom sa evidujú v `procedures.log` cez `finish`, deterministické sekvencie v `sequences.log` (P-030).
@@ -232,7 +234,7 @@ Konvencie zápisu: `<brain>` je koreň brain repa (P-024), `<plugin>` je koreň 
   Pred prepnutím na novú jednotku práce MUSÍ agent zapísať handover aktuálnej práce. Do handoveru témy A NESMIE preniknúť nič z témy B.
 - **Platí pre:** každú správu operátora počas rozpracovanej jednotky práce.
 - **Detekcia:** Vlákno pracuje na viac ako jednej téme. Handover obsahuje obsah mimo svojho predmetu.
-- **Vynútenie:** pravidlo. Rozpoznanie odbočenia vyžaduje úsudok, nie je deterministické.
+- **Vynútenie:** pravidlo; pre kód s vlastníkom hook. Rozpoznanie odbočenia vyžaduje úsudok. Repo, ktoré politika `topic_owned` priradí téme (`{"../agentic-flow": "workflow-dev"}`), mení, commituje a vydáva iba vlákno, ktoré tú tému drží; PreToolUse ostatným zápis, commit, push a tag zamietne a uvedie cestu poštou (operátor 2026-11-02: vlákno upratovania repozitárov zmenilo workflow a pýtalo sa na vydanie).
 - **Príklad:** Rieši sa téma A a operátor spomenie „mimochodom, treba aj zálohovať server“. Správne: „Toto je nová téma (zálohovanie). Pokračovanie tu otrávi kontext témy A. Mám založiť novú tému a vlákno, alebo to zatiaľ nechať?“ Nesprávne: začať riešiť zálohovanie v tom istom kontexte.
 - **Zdroj:** operátor, 2026-10-31. Vzťah k téme: P-036.
 - **Výnimka:** povolená
@@ -366,10 +368,10 @@ Konvencie zápisu: `<brain>` je koreň brain repa (P-024), `<plugin>` je koreň 
 
   Mechanika workflow (prepis záznamu subjektu cez `save`, zápis brain cez skript podľa P-040, regenerácia nastavení podľa P-017, rotácia logov podľa P-030, obnova lokálnych indexov podľa P-039) je povolená samotným workflow.
 - **Platí pre:** mazanie a prepisovanie (`rm`, Write, `mv` alebo `cp` na existujúci cieľ, presmerovanie `>`), netriviálne zmeny a operácie s históriou gitu.
-  Nie sú nebezpečné: súbor, ktorý vytvorilo to isté vlákno nástrojom Write alebo príkazom shellu (presmerovanie, `cp` na nový cieľ; zapísané v stave vlákna), obsah `scratch/` (P-052), presmerovanie na zariadenie (`>/dev/null`, `>&2`) a zdroj príkazu `cp`. Ciele príkazu sa určujú po odstránení textu heredoc a v úvodzovkách a s ohľadom na `cd` v tom istom príkaze. Operácia s históriou sa porovnáva ako celý príkaz; bezpečné tvary (`git restore --staged`, `git clean -n`) potvrdenie nevyžadujú.
+  Nie sú nebezpečné: súbor, ktorý vytvorilo to isté vlákno nástrojom Write alebo príkazom shellu (presmerovanie, `cp` na nový cieľ; zapísané v stave vlákna), obsah `scratch/` (P-052) aj v inom repe, v ktorom vlákno pracuje (`<repo>/scratch/`, ak ho repo ignoruje), súbor, ktorý vlákno zmenilo z čistého stavu a ktorého obsah sa odvtedy nezmenil inak než nástrojmi vlákna (vlastná úprava: hash po každom nástroji v stave vlákna; obnova alebo prepis nestratí cudziu prácu; pri príkaze shellu sa porovnajú necommitnuté sledované súbory repov, v ktorých príkaz pracuje (`cwd`, `cd`, `git -C`), pred ním a po ňom, takže vlastnou úpravou je aj zápis skriptom, napr. `python3` heredoc), presmerovanie na zariadenie (`>/dev/null`, `>&2`) a zdroj príkazu `cp`. Ciele príkazu sa určujú po odstránení textu heredoc a v úvodzovkách a s ohľadom na `cd` v tom istom príkaze. Operácia s históriou sa porovnáva ako celý príkaz; bezpečné tvary (`git restore --staged`, `git clean -n`) potvrdenie nevyžadujú, rovnako `git restore <cesty>` a `git checkout -- <cesty>`, keď sú všetky necommitnuté súbory pod cestami vlastné úpravy vlákna.
 - **Detekcia:** Zmazanie, prepísanie alebo netriviálna zmena nebezpečného cieľa, alebo operácia s históriou, bez potvrdenia operátora v tom istom kroku a bez skillu s ID rozhodnutia. Obsah z `local/` sa objaví v sledovanej časti.
 - **Vynútenie:** oboje. Deklaratívny `ask` na operácie s históriou (P-015). PreToolUse hook, ktorý pri zápise alebo mazaní overí cez `git status` a `git check-ignore`, či je cieľ nebezpečný, a pri netriviálnej zmene vyžiada potvrdenie (deterministické).
-  **Upratovanie.** Súbor, ktorý preukázateľne vznikol chybou agenta (známy je príkaz, ktorý ho vytvoril) a nie je dôvod ho uchovať, agent zmaže bez potvrdenia a v odpovedi uvedie súbor a príkaz, ktorý ho vytvoril. Ak ho hook nespozná ako vlastný (iné vlákno, presmerovanie vnútri programu ako `awk`), potvrdenie v dialógu hooku stačí a agent v ňom uvedie príčinu (operátor, 2026-11-01).
+  **Upratovanie.** Súbor, ktorý preukázateľne vznikol chybou agenta (známy je príkaz, ktorý ho vytvoril) a nie je dôvod ho uchovať, agent zmaže bez potvrdenia a v odpovedi uvedie súbor a príkaz, ktorý ho vytvoril. Ak ho hook nespozná ako vlastný (iné vlákno, presmerovanie vnútri programu ako `awk`), potvrdenie v dialógu hooku stačí a agent v ňom uvedie príčinu (operátor, 2026-11-01). Upratovanie po sebe (pracovné súbory, obnova vlastnej úpravy) sa operátora nepýta: otázka preruší autonómnu prácu (operátor, 2026-11-03). To isté platí pre iné artefakty vlastného testu alebo chyby: téma, ktorú vlákno založilo (`created_by` v `topic.json`; prevzatie `claim --force` a `release --force` bez `--operator-approved`, potom `finish --topic`), a vlákno, ktoré pre ňu spustilo (archivácia). Agent uprace sám a oznámi, čo upratal (alice 2026-11-03: testovacia téma tt-free čakala na súhlas operátora).
 - **Príklad:** Operátor povie „zmaž staré logy v local/“. Správne: „Zmažem tieto 3 súbory: local/a.log, local/b.log, local/c.log. Nie sú v gite, nedajú sa obnoviť. Potvrdzuješ?“ a až potom zmazanie. Pri commitnutom súbore v `src/` netreba potvrdenie na zmazanie, ale iba vtedy, ak je zmazanie v zadaní.
 - **Zdroj:** operátor, 2026-10-31
 - **Výnimka:** zakázaná
@@ -422,7 +424,7 @@ Konvencie zápisu: `<brain>` je koreň brain repa (P-024), `<plugin>` je koreň 
   Poradie a obsah sa kontrolujú na položkách, ktoré skladá SessionStart hook (1, 3 až 7). Položku 2 dodáva harness a do kontroly poradia NEPATRÍ. Ak téma čaká na správy (`mail: n > 0`), hook k položke 3 pridá jeden riadok `mail: <n> waiting: <id> <kategória>, …` (P-044).
 
   Nič iné sa pri štarte NESMIE načítať. Detaily sa čítajú na požiadanie (progressive disclosure). Subagent štartovaciu sekvenciu nedostáva (P-025).
-  Zmena pravidiel počas session (workflow, pravidlá projektu, výnimky) MUSÍ platiť od najbližšieho ťahu: SessionStart uloží hash zostavených pravidiel do stavu vlákna, UserPromptSubmit ho porovná a pri zmene vloží raz celé platné pravidlá. Agentovi sa NESMIE oznámiť verzia ani história zmeny, iba platné pravidlá.
+  Zmena pravidiel počas session (workflow, pravidlá projektu, výnimky) MUSÍ platiť od najbližšieho ťahu: SessionStart uloží hash zostavených pravidiel do stavu vlákna, UserPromptSubmit ho porovná a pri zmene vloží raz celé platné pravidlá. Agentovi sa NESMIE oznámiť verzia ani história zmeny, iba platné pravidlá. Aktualizácia workflow bez zmeny textu pravidiel pravidlá znova nevkladá; riadok o aktualizácii menuje iba skilly, ktoré sa zmenili (git diff medzi revíziami), aby sa znova čítali iba tie (tokeny, operátor 2026-11-03).
 - **Platí pre:** štart každej session, ktorá načíta workflow.
 - **Detekcia:** Štartovací kontext obsahuje položku mimo zoznamu alebo položku v nesprávnom poradí.
 - **Vynútenie:** oboje. Sekvenciu zostavuje jeden SessionStart hook pluginu (`node <plugin>/hooks/session-start.mjs`) a test workflow porovná výstup so zoznamom a limitmi (P-022).
@@ -487,8 +489,9 @@ Konvencie zápisu: `<brain>` je koreň brain repa (P-024), `<plugin>` je koreň 
     - `exceptions/` (P-035), `logs/` (P-030), `policy.json` (projektové doplnky politiky),
     - `local/` v `.gitignore`: `local/index/` (P-039), `local/exceptions.md` (P-035), `local/outbox/` (P-041),
     - `.gitattributes` (`* text eol=lf`, `logs/*.log merge=union`), `.githooks/pre-commit.mjs` (P-040).
-  - **Persona je brain.** Persona (organizačná rola, P-025) je projekt, ktorého repo je zároveň brain: `.workflow.json` má `"brain": "."`. Hodnota `"."` je povolená iba pre personu a skripty ju MUSIA vyriešiť na hlavný checkout repa (`git rev-parse --git-common-dir`), nikdy na worktree. Persona NESMIE mať vlastné dáta projektu; dokumenty a výstupy patria do spravovaných projektov. Okrem štruktúry šablóny obsahuje repo persony iba `README.md`, `.workflow.json`, `.gitignore` a `.claude/settings.json`; generované súbory commituje adaptér cez skript brain (P-040). Zákaz priameho zápisu do brain (P-013) sa v persone vzťahuje na priečinky a súbory šablóny, nie na `scratch/` (P-052) a `local/` (P-018).
-  - **Umiestnenie brain.** Projekt MUSÍ mať v koreni commitnutý súbor `.workflow.json` s poľom `brain`: relatívna cesta od koreňa projektu s oddeľovačom `/` (predvolene `../<nazov-brain>`, brain leží vedľa projektu). Absolútna cesta sa NESMIE použiť. Ak brain na danom stroji leží inde, operátor zapíše cestu do necommitnutého `<project>/local/workflow.json` s rovnakým formátom; ten má prednosť. Skripty cestu riešia cez `path.resolve`, takže funguje aj na Windows. Projekt na brain NESMIE odkazovať symlinkom; skilly brain sa do projektu kopírujú pri štarte (P-017).
+  - **Persona je brain.** Persona (organizačná rola, P-025) je projekt, ktorého repo je zároveň brain: `.workflow.json` má `"brain": "."`. Hodnota `"."` je povolená iba pre personu a skripty ju MUSIA vyriešiť na hlavný checkout repa (`git rev-parse --git-common-dir`), nikdy na worktree. Persona NESMIE mať vlastné dáta projektu; výstupy pre spravovaný projekt patria do neho. Trvalé dokumenty samotnej persony (prieskum, reporty, podklady opakovanej úlohy) MUSIA ísť do `docs/` persony: agent ich zapisuje priamo a commitne `save.mjs docs`; `scratch/` je iba pracovný priečinok a stav opakovanej úlohy patrí do `local/` (alice 2026-11-03: denný report v `scratch/`). Okrem štruktúry šablóny obsahuje repo persony iba `README.md`, `.workflow.json`, `.gitignore` a `.claude/settings.json`; generované súbory commituje adaptér cez skript brain (P-040). Zákaz priameho zápisu do brain (P-013) sa v persone vzťahuje na priečinky a súbory šablóny, nie na `scratch/` (P-052), `local/` (P-018) a `docs/`.
+  - **Brain je voliteľný.** Projekt, ktorý spravuje persona, NEMUSÍ mať vlastný brain: témy, pamäť a handover sú v brain persony. Adaptér bez `--brain` brain nezapíše a štart ani adaptér ho nenavrhujú; brain projektu vzniká iba na pokyn operátora (alice 2026-11-03: `agentic-flow-brain` vznikol z predvolenej cesty adaptéra a nepoužila ho žiadna session).
+  - **Umiestnenie brain.** Projekt s vlastným brain MUSÍ mať v koreni commitnutý súbor `.workflow.json` s poľom `brain`: relatívna cesta od koreňa projektu s oddeľovačom `/` (predvolene `../<nazov-brain>`, brain leží vedľa projektu). Absolútna cesta sa NESMIE použiť. Ak brain na danom stroji leží inde, operátor zapíše cestu do necommitnutého `<project>/local/workflow.json` s rovnakým formátom; ten má prednosť. Skripty cestu riešia cez `path.resolve`, takže funguje aj na Windows. Projekt na brain NESMIE odkazovať symlinkom; skilly brain sa do projektu kopírujú pri štarte (P-017).
   - **Všetko ostatné sú dáta projektu.** Vstupy od operátora, research, stiahnuté dokumenty, vytvorený kód a dokumenty podľa P-007 patria do projektu mimo brain. Brain ich NESMIE obsahovať.
   - **Aktivácia brain.** Ak projekt so zapnutým workflow nemá `.workflow.json` alebo brain na uvedenej ceste nenájde, SessionStart hook to MUSÍ oznámiť jedným riadkom (P-021) a agent navrhne založenie brain zo šablóny (`node <plugin>/bin/brain-init.mjs <cesta>`). Nové repo smie založiť až po súhlase operátora. Aktivácia nastaví `core.hooksPath` (P-040) a vytvorí `local/` v brain aj v projekte (P-018).
   - **Povýšenie do workflow.** Skill alebo pravidlo z brain, ktoré prejde testom všeobecnosti (P-004), agent NESMIE zapísať do workflow. Smie iba navrhnúť operátorovi povýšenie cez vývojovú vetvu repa workflow (P-048).
@@ -619,9 +622,10 @@ Konvencie zápisu: `<brain>` je koreň brain repa (P-024), `<plugin>` je koreň 
 - **Typ:** príkaz
 - **Problém:** Agent opakovane ručne skladá tú istú sekvenciu deterministických príkazov (shell, CLI, API volania). Bez evidencie nevie, že ju robí opakovane.
 - **Pravidlo:**
-  - **Záznam.** PostToolUse hook zapisuje normalizované sekvencie shell príkazov: program a prvý podpríkaz (`git fetch`, `npm test`), argumenty sa ignorujú; pri interpreteri je procedúrou skript (`node x.mjs`). Skripty samotného workflow sa NEZAPISUJÚ, už sú procedúrou so skillom (pilot 2026-11-01: `node …/comms.mjs` 5× viedlo k falošnému návrhu skillu). Sekvencia sú po sebe idúce úspešné shell príkazy v jednom ťahu agenta; neúspešný príkaz ju ukončí. Počítajú sa súvislé podsekvencie dĺžky 2 až 5. Pevný zoznam čisto čítacích príkazov (`ls`, `cat`, `pwd`, `head`, `tail`, `git status`, `git log`, `git diff`) sa vynecháva; zoznam je súčasťou workflow. Záznam NESMIE vstúpiť do kontextu.
+  - **Záznam.** PostToolUse hook zapisuje normalizované sekvencie shell príkazov: program a prvý podpríkaz (`git fetch`, `npm test`), argumenty sa ignorujú; pri interpreteri je procedúrou skript (`node x.mjs`). Skripty samotného workflow sa NEZAPISUJÚ, už sú procedúrou so skillom (pilot 2026-11-01: `node …/comms.mjs` 5× viedlo k falošnému návrhu skillu). Sekvencia sú po sebe idúce úspešné shell príkazy v jednom ťahu agenta; neúspešný príkaz ju ukončí. Počítajú sa súvislé podsekvencie dĺžky 2 až 5. Pevný zoznam čisto čítacích príkazov (`ls`, `cat`, `pwd`, `head`, `tail`, `git status`, `git log`, `git diff`, `cd`, `grep`, `wc`, `sed` bez `-i`) sa vynecháva; zoznam je súčasťou workflow. Text v úvodzovkách a telo heredoc sú dáta, nie príkazy (správa commitu ani skript `python3` nevytvoria falošný program). Záznam NESMIE vstúpiť do kontextu.
   - **Detekcia.** Počítajú sa iba úspešné sekvencie (každý príkaz exit 0). Neúspešná sekvencia patrí pod P-003. Keď sa tá istá sekvencia aspoň dvoch príkazov objaví tretíkrát, aj naprieč sessions, hook pošle jeden riadok podľa P-023 (c). Návrh tej istej sekvencie hook pošle vláknu najviac raz (stav vlákna `proposed`), nie pri každom ťahu, v ktorom počet znova vidí (pilot 2026-11-01: návrh v každom ťahu pálil tokeny).
-  - **Povinnosť.** Agent potom MUSÍ pripraviť návrh skillu so skriptom, ktorý berie hodnoty ako argumenty, vrátane názvu, a predložiť ho operátorovi. Súhlas, odmietnutie a názov sa riešia ako v P-005. Kroky s úsudkom zostanú v skille a do skriptu ide iba deterministická časť.
+  - **Povinnosť.** Agent potom MUSÍ sám, bez súhlasu operátora, vytvoriť skill so skriptom, ktorý berie hodnoty ako argumenty, alebo existujúci skill sekvencie doplniť o skript (`save skill --script`). Odmietnutie sa rieši ako v P-005. Kroky s úsudkom zostanú v skille a do skriptu ide iba deterministická časť.
+  - **Opakovaná úloha.** Naplánovaná úloha (T3 `schedule_task`, opakovaný `CronCreate`) MUSÍ spúšťať skript: zber, porovnanie s uloženým stavom a zápis výsledku sú deterministické a patria do skriptu v skille (`save skill --script`); prompt úlohy skript spustí absolútnou cestou a agent iba hodnotí jeho výstup. Prompt bez skriptu PreToolUse hook zamietne (alice 2026-11-03: denný report, v ktorom agent pri každom behu sám sťahoval a porovnával zdroje).
   - **Logy v brain.** Záznamy pozorovaní sú surový vstup pre učenie, nie vedomosť. Ležia v `<brain>/logs/` a sú commitnuté cez skript brain (P-040). Zapisujú do nich iba skripty workflow. Logy sa nikdy nenačítavajú do kontextu. Hooky NESMÚ commitovať pri každom volaní nástroja: záznamy počas ťahu zbierajú do lokálneho bufferu `<brain>/local/log-buffer/` a hook Stop ich zapíše do logov jedným volaním `brain.mjs` na ťah.
     - `sequences.log`: jeden riadok na výskyt úspešnej sekvencie.
     - `failures.log`: zlyhania subagenta (P-028).
@@ -632,7 +636,7 @@ Konvencie zápisu: `<brain>` je koreň brain repa (P-024), `<plugin>` je koreň 
 - **Platí pre:** každé volanie shell nástroja hlavného agenta aj subagenta.
 - **Detekcia:** Sekvencia s počtom 3 a viac bez existujúceho skillu.
 - **Vynútenie:** hook (záznam a signál, deterministické), vytvorenie skillu cez `save`.
-- **Príklad:** Tretíkrát `git fetch` → `git rebase` → `npm test` s inými hodnotami. Hook pošle „sequence fetch-rebase-test 3x“ a agent navrhne operátorovi skill so skriptom `sync-and-test.mjs <branch>`.
+- **Príklad:** Tretíkrát `git fetch` → `git rebase` → `npm test` s inými hodnotami. Hook pošle „sequence fetch-rebase-test 3x“ a agent vytvorí skill so skriptom `sync-and-test.mjs <branch>`.
 - **Zdroj:** operátor, 2026-10-31. Rieši P-005 V1 pre postupy bez úsudku. Buffer logov a jeden zápis na ťah (agent (delegované operátorom), 2026-11-01).
 - **Výnimka:** povolená
 - **Výhrady:**
@@ -733,7 +737,7 @@ Konvencie zápisu: `<brain>` je koreň brain repa (P-024), `<plugin>` je koreň 
   - Téma MUSÍ mať priečinok `<brain>/topics/<id>/` so súbormi `topic.json` (`subject`, `kind: code | discussion`, `state: working | free`, P-044), `holder.json` (P-037) a `handover.md` (P-011). ID témy obsahuje iba malé písmená, číslice a pomlčky.
   - Handover, držiteľ, kópia kódu a adresa správ sa viažu na tému. Tú istú tému môže postupne viesť viac vlákien; nové vlákno pokračuje podľa handoveru. Jedna téma obsahuje postupne viac jednotiek práce (P-012).
   - **Kódová téma** má navyše izolovanú kópiu kódu a vlastnú vetvu `topic/<id>`. Kópia je VŽDY samostatný klon v `../<project>-topics/<id>/` vedľa projektu; založí ho skill `topic`. Worktree so zdieľaným `.git` sa NESMIE použiť, ani v prostredí T3 (P-033 ostáva nahradený). Do hlavnej vetvy sa výsledok dostane iba cez `finish --topic`, ktorý stiahne najnovší stav, vyrieši konflikty v kópii, overí (P-020) a zlúči. Diskusná téma kópiu kódu nemá.
-  - **Názov vlákna** v T3 nasleduje tému: po zmene témy vlákna hook (UserPromptSubmit) prečíta názov (`policy.json thread_title.command`, `t3 thread show --json`) a dá agentovi jeden riadok „thread title: rename this thread to "<id témy>"“; agent ho premenuje nástrojom T3 (`t3_thread_update`, hook to sám nevie). Názov zmenený ručne (iný než ten, o ktorý workflow žiadal, aj než ten, ktorý predtým videl) sa nemení; hlavné vlákno persony (drží `main`) a ťahy zo zvončeka sa vynechávajú (operátor, 2026-11-01). Prvý názov vlákna, ktorý workflow ešte nevidel, sa nahradí.
+  - **Názov vlákna** v T3 nasleduje tému: po zmene témy vlákna hook (UserPromptSubmit) prečíta názov (`policy.json thread_title.command`, `t3 thread show --json`) a dá agentovi jeden riadok „thread title: rename this thread to "<id témy>"“; agent ho premenuje nástrojom T3 (`t3_thread_update`, hook to sám nevie). Názov zmenený ručne (iný než ten, o ktorý workflow žiadal, aj než ten, ktorý predtým videl) sa nemení; hlavné vlákno persony (drží `main`), vlákno s viac ako jednou pracovnou témou (prvá v abecede je náhodná; alice 2026-11-03 dostal „carol-v2“ namiesto „workflow-dev“) a ťahy zo zvončeka sa vynechávajú (operátor, 2026-11-01). Prvý názov vlákna, ktorý workflow ešte nevidel, sa nahradí.
   - **Archivácia vlákna**: `finish --topic` v T3 (`T3CODE_THREAD_ID`) dá riadok „thread: … archive this thread“; agent ako posledný krok ťahu archivuje vlastné vlákno (`t3_thread_organize`, action `archive`). Hlavné vlákno sa nearchivuje nikdy (P-045). Hook to nevie sám, nástroj má iba agent (gap od Bob, 2026-11-01).
   - Pravidlá, chyby a poučenia, pamäť a rozhodnutia NEPATRIA téme. Sú spoločné pre celý projekt (P-039).
 - **Platí pre:** každú prácu v projekte, ktorá trvá dlhšie ako jednu odpoveď.
@@ -854,9 +858,9 @@ Konvencie zápisu: `<brain>` je koreň brain repa (P-024), `<plugin>` je koreň 
 - **Typ:** príkaz
 - **Problém:** Ak každá správa budí adresáta, pália sa tokeny (napríklad pri informácii „zmenil som X, sprav git pull“). Ak nebudí žiadna, odosielateľ, ktorý na odpoveď čaká, stojí.
 - **Pravidlo:** Úroveň správy (`level`) MUSÍ určiť odosielateľ podľa toho, ako ho blokuje odpoveď, nie podľa obsahu:
-  - `blocker`: bez odpovede nemôže pokračovať. Požiadavka budí adresáta (aj v režime `operator`, ten ju MUSÍ zodpovedať, vykonanie môže čakať na operátora), odpoveď budí odosielateľa.
-  - `steer`: mení smer práce v cieľovej téme. Ide hneď do vlákna držiteľa (udalosť `steer`), bez oznamu operátorovi.
-  - `assist` (pokračuj po odpovedi): pokračuje v inej práci. Požiadavka budí adresáta (bez oznamu operátorovi), odpoveď budí odosielateľa.
+  - `blocker`: odpoveď treba hneď. Požiadavka budí adresáta; ten ju MUSÍ zodpovedať hneď v každom režime (čo vie, výsledok, alebo odporúčanie, ak krok presahuje jeho pravomoc). Odosielateľ NEČAKÁ: pokračuje tým, čo odpoveď nepotrebuje, alebo odporúčaným predpokladom; `send` mu nastaví budík (15 min), odpoveď alebo budík ho zobudí.
+  - `steer`: mení smer práce v cieľovej téme. Ide hneď do vlákna držiteľa (udalosť `steer`), bez oznamu operátorovi; držiteľ prácu upraví a pokračuje, NIKDY ju nezastaví (P-057, operátor 2026-11-03: steer zastavil vlákno a vlákna čakali jedno na druhé).
+  - `assist` (pokračuj po odpovedi): pokračuje v inej práci. Požiadavka budí adresáta (bez oznamu operátorovi), odpoveď alebo budík (60 min) budí odosielateľa.
   - `info` je zrušená (2026-11-02): pošta ju odmietne a vypíše platné úrovne. Správa bez odpovede nie je poštová správa.
 
   Odpoveď (`reply_to`) bez úrovne nesie úroveň pôvodnej správy; nižšiu úroveň pošta zvýši (`level_raised_from`). Odpoveď nemá lehotu.
@@ -931,7 +935,7 @@ Konvencie zápisu: `<brain>` je koreň brain repa (P-024), `<plugin>` je koreň 
 
     Odosielateľ dostane v každom prípade rovnakú odpoveď. Správa pre personu sa prijme VŽDY, aj keď hlavné vlákno ešte neexistuje alebo sa reštartuje: čaká v schránke a persona ju prevezme po (znovu)narodení (`receive --persona`). Persona, ktorej hlavné vlákno sa nikdy nezaregistrovalo, dostane jeden otvorený oznam operátorovi `unregistered-persona` (ochrana pred preklepom); registrácia hlavného vlákna ho uzavrie.
   - Správa, ktorá nepatrí žiadnej téme alebo je určená neregistrovanej téme, ide operátorovi ako oznam „new topic? / redirect“ (P-046). Pošta tému NESMIE založiť sama a odosielateľovi sa okrem odpovede nič nevracia.
-  - Tému zakladá vlákno skillom `topic create <id> --subject "…"` alebo operátor. Téma pre nové vlákno: agent založí prázdne vlákno (T3) a tému `topic create <id> --subject "…" --for-thread <id vlákna>`; nové vlákno ju drží od prvého ťahu (zakladajúce vlákno ju nezaberá).
+  - Tému zakladá vlákno skillom `topic create <id> --subject "…"` alebo operátor. Vlákno, ktoré nedrží žiadnu tému, novú tému zaberie samo (operátor v ňom zadal prácu); nové vlákno sa spustí iba z vlákna, ktoré už tému drží, alebo s `--new-thread` (alice 2026-11-03: duplicitné vlákno a prevzatie späť so súhlasom operátora). Téma pre nové vlákno: agent založí prázdne vlákno (T3) a tému `topic create <id> --subject "…" --for-thread <id vlákna>`; nové vlákno ju drží od prvého ťahu (zakladajúce vlákno ju nezaberá).
 - **Platí pre:** každé založenie témy a každú adresu správy.
 - **Detekcia:** Téma bez `subject`. Správa doručená do všeobecného vlákna. Téma založená poštou. Správa persone odmietnutá alebo stratená, lebo hlavné vlákno nebežalo. Správa od cudzieho odosielateľa doručená do súkromnej témy.
 - **Vynútenie:** oboje. Skript založenia vyžaduje `subject`, pošta odmietne doručenie bez registrovanej témy a smeruje adresy persony (test `persona.test.mjs` v `agentic-comms`); téma `main` a `--for-thread` (test `main-topic.test.mjs`).
@@ -1043,7 +1047,7 @@ Konvencie zápisu: `<brain>` je koreň brain repa (P-024), `<plugin>` je koreň 
 
 - **Typ:** zákaz
 - **Problém:** Harness ponúka agentovi pracovný priečinok mimo projektu (scratchpad Claude Code v `/tmp/claude-…`, ďalej `/tmp`, `~`). Pokusy, medzivýsledky a stiahnuté súbory tak opúšťajú projekt, zdieľajú sa medzi sessions a projektmi a obchádzajú izoláciu (P-014). Operátor nevie, čo agent mimo projektu vytvoril, a nič to neupratuje.
-- **Pravidlo:** Agent NESMIE vytvárať ani meniť súbory mimo koreňa projektu. Dočasné a pracovné súbory (pokusy, medzivýsledky, stiahnuté dáta, výstupy príkazov) MUSÍ ukladať do `<project>/scratch/`, ktorý je v `.gitignore` projektu. Výnimky: kópia kódu témy `../<project>-topics/<id>/` (P-036), v persone spravované susedné projekty s workflow (priečinok s `.workflow.json`) a ich kópie tém (P-024), zápis do brain cez skript (P-040), klon workflow cez `git` (P-048), cieľ, ktorý operátor výslovne zadal. Scratchpad harnessu sa NESMIE používať. Obsah `scratch/` nie je dátami projektu ani brain; trvalý výsledok sa z neho presunie podľa P-007.
+- **Pravidlo:** Agent NESMIE vytvárať ani meniť súbory mimo koreňa projektu. Dočasné a pracovné súbory (pokusy, medzivýsledky, stiahnuté dáta, výstupy príkazov) MUSÍ ukladať do `<project>/scratch/`, ktorý je v `.gitignore` projektu. Výnimky: kópia kódu témy `../<project>-topics/<id>/` (P-036), v persone spravované projekty s workflow (priečinok s `.workflow.json` alebo s pluginom workflow v `.claude/settings.json`, aj vnorený v susednom priečinku, napr. pilot) a ich kópie tém (P-024), zápis do brain cez skript (P-040), klon workflow cez `git` (P-048), cieľ, ktorý operátor výslovne zadal. Scratchpad harnessu sa NESMIE používať. Obsah `scratch/` nie je dátami projektu ani brain; trvalý výsledok sa z neho presunie podľa P-007.
 - **Platí pre:** Write, Edit, Bash a každý nástroj, ktorý zapisuje súbory; hlavného agenta aj pracovníka (P-025); každý projekt s workflow vrátane persony.
 - **Detekcia:** Zápis s cieľom mimo koreňa projektu (`/tmp/**`, `~/**`, cesta scratchpadu harnessu). Súbory agenta v `/tmp` alebo v domovskom priečinku. Chýbajúci `scratch/` v `.gitignore` projektu.
 - **Vynútenie:** oboje. PreToolUse `ask` pre Write a Edit mimo koreňa projektu a výnimiek (P-015); `ask`, nie `deny`, lebo cieľ zadaný operátorom hook nerozozná. Cieľ v systémovom dočasnom priečinku (`os.tmpdir()`, `/tmp`, `/var/tmp`) hook zamietne (`deny`) s cestou do `scratch/`: dočasný súbor nie je cieľ operátora a otázka by iba prerušila prácu (2026-11-02: pracovník zapisoval `/tmp/subagent/p*.py` a operátor potvrdzoval 13×). Zadanie pracovníka bez cesty `scratch/` (nie z `delegate.mjs prepare`) hook zamietne. Aktivácia (P-024) vytvorí `scratch/` a zapíše ho do `.gitignore`. Kandidát na hook: PreToolUse pre Bash zachytí presmerovanie a cieľ príkazov (`>`, `cp`, `mv`, `mktemp`, `curl -o`) mimo projektu.
@@ -1098,8 +1102,8 @@ Konvencie zápisu: `<brain>` je koreň brain repa (P-024), `<plugin>` je koreň 
 - **Typ:** príkaz
 - **Problém:** Agent skončil ťah otázkou v texte a čakal na operátora. Harness (T3) ukázal vlákno ako hotové („done“), takže operátor nevidel, že sa čaká naňho. Otázka nástrojom harnessu však drží ťah otvorený: vlákno kým čaká, nerobí nič iné a zvončeky pošty čakajú za ňou.
 - **Pravidlo:** Rovnaké úrovne ako pošta (P-042):
-  - `blocker` – agent bez odpovede operátora nemôže pokračovať v ničom: požiadavku MUSÍ položiť nástrojom otázky harnessu (Claude Code: `AskUserQuestion`, 1 až 4 možnosti, odporúčaná prvá), nie textom. Harness potom ukáže vlákno ako čakajúce na vstup. Nová správa operátora otázku zruší.
-  - ostatné (agent pokračuje alebo ťah končí výsledkom): požiadavka je formátovaný text na konci odpovede, oddelený riadkom `**Pre teba:**` a body zoznamu; NESMIE sa klásť nástrojom otázky, lebo by blokovala ťah a poštu.
+  - Každá požiadavka je formátovaný text na konci odpovede, oddelený riadkom `**Pre teba:**` (možnosti, odporúčaná prvá, a ktorú agent zvolil). Agent pokračuje s odporúčanou možnosťou; operátor ju môže neskôr zmeniť. Ak treba čakať, agent nastaví budík (P-057).
+  - Nástroj otázky (`AskUserQuestion`) je zakázaný: drží ťah, kým operátor neodpovie, a práca stojí (operátor 2026-11-03). Hook PreToolUse ho zamietne.
 - **Platí pre:** hlavného agenta v ťahu operátora aj v ťahu zo správy. Pracovník sa operátora nepýta (P-025).
 - **Detekcia:** Ťah končí otázkou v texte, bez ktorej agent nepokračuje. Nástroj otázky pri požiadavke, ktorá agenta neblokuje.
 - **Vynútenie:** pravidlo. Či agenta požiadavka blokuje, hook deterministicky nezistí.
@@ -1107,7 +1111,7 @@ Konvencie zápisu: `<brain>` je koreň brain repa (P-024), `<plugin>` je koreň 
 - **Zdroj:** operátor, 2026-11-01 (T3 ukázal „done“, hoci vlákno čakalo na operátora; overené: otázka nástrojom ukáže „čaká na vstup“).
 - **Výnimka:** povolená
 
-### P-057: Čakanie s budíkom (self-armed waker)
+### P-057: Práca sa nezastaví, čakanie iba s budíkom (work never stops, self-armed waker)
 
 - **Typ:** príkaz
 - **Problém:** Agent zadal prácu inému (agentovi, operátorovi na odovzdanie inému) a ukončil ťah „keď sa to objaví, ozvi sa mi“. Nikto ho nezobudil: operátor nie je budík. Alebo čakal v popredí (`sleep`, slučka), čo drží ťah otvorený a páli tokeny.
@@ -1115,10 +1119,11 @@ Konvencie zápisu: `<brain>` je koreň brain repa (P-024), `<plugin>` je koreň 
   - odpoveď agenta → pošta `blocker`/`assist` s lehotou (P-042); zobudí odpoveď alebo `no reply <id>`,
   - udalosť na tomto stroji (súbor, proces, služba) → watcher na pozadí (`run_in_background`), ktorý skončí, keď udalosť nastane, s horným limitom času,
   - kontrola v čase (alebo udalosť, ktorú watcher nevidí) → plánovaná úloha harnessu (T3 `schedule_task`) do toho istého vlákna.
-  Agent NESMIE žiadať operátora „ozvi sa mi“, „daj vedieť“ ani čakať na jeho správu ako budík. Operátor zasahuje, iba keď budík zlyhá. Čakanie v popredí nad 10 s je zakázané.
+  - kedykoľvek inokedy → časovač vlákna `<plugin>/bin/timer.mjs --in <min>m --then "<krok>"`: hook Stop pošle čas so zatvoreným ťahom (`resume_at`), budenie vlákno zazvoní v tom čase („turn ended with a next step, continue from handover“) a prompt hook vypíše krok.
+  Žiadna správa (ani `steer`, `blocker`), otázka ani udalosť prácu NEZASTAVÍ; smie ju iba odložiť na dohodnutý čas (operátor 2026-11-03). „Čakám“ bez naplánovaného zobudenia je zakázané. Agent NESMIE žiadať operátora „ozvi sa mi“, „daj vedieť“ ani čakať na jeho správu ako budík. Čakanie v popredí nad 10 s je zakázané.
 - **Platí pre:** hlavného agenta.
 - **Detekcia:** Koniec ťahu „čakám na …“ bez nastaveného budíka; výzva operátorovi, aby agenta zobudil; `sleep`, `watch` alebo slučka so `sleep` v popredí.
-- **Vynútenie:** hook PreToolUse zamietne čakanie v popredí (`sleep` > 10 s, slučka so `sleep`, `watch`), ak príkaz nebeží na pozadí. Budík pred koncom ťahu je pravidlo.
+- **Vynútenie:** hook PreToolUse zamietne čakanie v popredí (`sleep` > 10 s, slučka so `sleep`, `watch`) a `AskUserQuestion`. Hook Stop (`scripts/waker.mjs`) zablokuje koniec ťahu, ktorý tvrdí čakanie („čakám“, „waiting for“) alebo končí otázkou operátorovi, ak v ťahu nevznikol budík (časovač, úloha na pozadí, plánovač, pošta bez `--reply-to`); keď agent skončí aj tak, hook nastaví časovač sám (15 min, pri opakovaní dvojnásobok, najviac 2 h). Platí aj v ťahu zo zvončeka. `comms send` s úrovňou `blocker`/`assist` nastaví časovač na okno odpovede; odpoveď ho zruší.
 - **Príklad:** Bob čaká na token, ktorý Carol uloží do súboru. Správne: watcher na pozadí `until [ -s <súbor> ]; do sleep 30; done` s limitom (napr. `timeout 4h`), v odpovedi „budík: watcher na <súbor>, max 4 h“. Nesprávne: „Keď sa objaví na serveri, ozvi sa mi.“
 - **Zdroj:** operátor, 2026-11-01 („ja nie som budíkom nikdy“; Bob čakal na token od Carol).
 - **Výnimka:** povolená
@@ -1147,7 +1152,7 @@ Konvencie zápisu: `<brain>` je koreň brain repa (P-024), `<plugin>` je koreň 
   Na vonkajšiu udalosť agent čaká s budíkom (P-057) a medzitým robí ostatnú prácu zadania.
 - **Platí pre:** hlavného agenta.
 - **Detekcia:** Koniec ťahu „mám pokračovať / začať hneď?“ pri kroku, ktorý zadanie pokrýva.
-- **Vynútenie:** pravidlo.
+- **Vynútenie:** hook Stop (`hooks/stop.mjs` `checkInQuestion`): odpoveď, ktorej posledná veta je otázka na povolenie („Mám…?“, „Môžem…?“, „Chceš, aby som…?“, „Začať…?“, „Should I…?“), zablokuje raz s pokynom krok urobiť; skutočný blocker agent pri druhom zastavení položí a pomenuje (alice 2026-11-03: „Mám to zadať pracovníkovi?“ pri práci držanej témy workflow-dev).
 - **Príklad:** Bob má zadanie „vlastný tunel + Access pre stavovú stránku“ a čaká, kým DNS server začne odpovedať. Správne: nastaví budík na kontrolu DNS server a hneď stavia tunel a Access pre `status.example.com`. Nesprávne: „Medzitým môžem postaviť tunel. Začať s tým hneď?“
 - **Zdroj:** operátor, 2026-11-01 („human in the loop iba vtedy, ak agent nevie pokračovať sám, alebo je to mimo jeho pravomoci“); 2026-11-02 („otázky len ak sú blocker pre prácu … inak to pretrhne slučku“).
 - **Výnimka:** povolená
@@ -1156,12 +1161,12 @@ Konvencie zápisu: `<brain>` je koreň brain repa (P-024), `<plugin>` je koreň 
 
 - **Typ:** príkaz
 - **Problém:** Agenti odpovedali dlho, s analýzou a opisom vlastného uvažovania aj na jednoduché otázky. Operátor musel hľadať odpoveď v texte. Stručnosť bola iba v niektorých personách, nie vo workflow.
-- **Pravidlo:** Na otázku typu áno/nie agent MUSÍ odpovedať „áno“ alebo „nie“ (prípadne s jednou vetou obmedzenia). Inak odpovedá maximálne stručne a výstižne; stručnosť má prednosť pred gramatickou dokonalosťou. Na jednoduchú otázku odpovedá priamo, bez zbytočnej analýzy a bez opisu interného postupu uvažovania.
+- **Pravidlo:** Na otázku typu áno/nie agent MUSÍ odpovedať „áno“ alebo „nie“ (prípadne s jednou vetou obmedzenia). Inak odpovedá maximálne stručne a výstižne; stručnosť má prednosť pred gramatickou dokonalosťou. Na jednoduchú otázku odpovedá priamo, bez zbytočnej analýzy a bez opisu interného postupu uvažovania. Prevádzkové údaje (ID vlákien a naplánovaných úloh, časy behu, stavy časovačov, commity, čísla pravidiel) operátorovi nepíše, ak sa na ne nepýta: patria do handoveru a logov.
 - **Platí pre:** hlavného agenta v odpovediach operátorovi.
 - **Detekcia:** Odpoveď na áno/nie otázku nezačína „áno“ ani „nie“; odpoveď opisuje, čo agent zvažoval.
 - **Vynútenie:** pravidlo.
 - **Príklad:** „Beží pošta?“ Správne: „Áno, comms-prod active.“ Nesprávne: odsek o tom, ako agent stav zisťoval.
-- **Zdroj:** operátor, 2026-11-02 (požiadavka v alice/main).
+- **Zdroj:** operátor, 2026-11-02 (požiadavka v alice/main); prevádzkové údaje 2026-11-03 (vlákno sledovanie-ai-noviniek: report odsunuli správy o časovačoch a ID úloh).
 - **Výnimka:** povolená
 
 ## Predvolené hodnoty politiky

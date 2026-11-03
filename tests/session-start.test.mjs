@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { setup, initProject, cleanEnv } from './helpers.mjs';
 import { BOOT_MARKERS } from '../scripts/boot.mjs';
+import { readThreadState } from '../scripts/config.mjs';
 
 function headings(text) {
   return text.split('\n').filter((l) => l.startsWith('## '));
@@ -35,14 +36,23 @@ test('resume and clear keep the same thread id; compact adds the handover of the
       assert.match(r.context, /thread a1 \| topic work \(working, mode operator\) \| mail: 0/, source);
       assert.doesNotMatch(r.context, /Handover \(primárny podklad/);
     }
-    // T3 cannot resume a thread after /clear: the warning appears only for clear inside T3
-    assert.match(fx.hook('session-start.mjs', { source: 'clear' }, { env: { T3CODE_THREAD_ID: 'a1' } }).context, /T3 \/clear: .*nové vlákno|T3 \/clear: .*novom vlákne/);
-    assert.doesNotMatch(fx.hook('session-start.mjs', { source: 'clear' }).context, /T3 \/clear/);
-    assert.doesNotMatch(fx.hook('session-start.mjs', { source: 'resume' }, { env: { T3CODE_THREAD_ID: 'a1' } }).context, /T3 \/clear/);
     const c = fx.hook('session-start.mjs', { source: 'compact' });
     assert.match(c.context, /Handover \(primárny podklad, P-026\):\n### Zadanie\nDo the thing/);
     assert.match(c.context, /open: work \(working, a1, next: step 2\)/);
     assert.deepEqual(headings(c.context), BOOT_MARKERS);
+  } finally { fx.cleanup(); }
+});
+
+test('no brain configured (optional, P-024): notice without a brain-init proposal', () => {
+  const fx = setup();
+  try {
+    const plain = path.join(fx.root, 'plain');
+    initProject(plain);
+    fs.rmSync(path.join(plain, '.workflow.json'));
+    const r = fx.hook('session-start.mjs', { source: 'startup' }, { cwd: plain });
+    assert.deepEqual(headings(r.context), BOOT_MARKERS);
+    assert.match(r.context, /brain: none \(optional, P-024\)/);
+    assert.doesNotMatch(r.context, /brain-init/);
   } finally { fx.cleanup(); }
 });
 
@@ -123,5 +133,42 @@ test('session start exports WORKFLOW_PROJECT_DIR into CLAUDE_ENV_FILE once, so s
     const dir = JSON.parse(lines[0].slice('export WORKFLOW_PROJECT_DIR='.length));
     const r = fx.run('topic.mjs', ['list'], { cwd: fx.root, env: { WORKFLOW_PROJECT_DIR: dir } });
     assert.equal(r.status, 0, r.stderr);
+  } finally { fx.cleanup(); }
+});
+
+test('T3 /clear (t3code#24152): the transcript T3 resumes becomes a link to the session after /clear', () => {
+  const fx = setup();
+  try {
+    const A = '6168aa37-ede5-4546-912e-0f540e534356', B = '4c91917d-9adf-4f4d-8f7d-d67a3813bf79', C = '0dec3bb3-1111-4222-8333-944445555666';
+    const dir = path.join(fx.root, 'transcripts');
+    fs.mkdirSync(dir);
+    const t3 = { env: { T3CODE_THREAD_ID: 'a1', WORKFLOW_T3_PROVIDER_LOGS: path.join(fx.root, 'nologs') } };
+    const tp = (id) => path.join(dir, `${id}.jsonl`);
+    fs.writeFileSync(tp(A), 'old\n');
+    fx.hook('session-start.mjs', { source: 'startup', session_id: A, transcript_path: tp(A) }, t3);
+    assert.equal(readThreadState(fx.brain, 'a1').t3_cursor, A);
+    let r = fx.hook('session-start.mjs', { source: 'clear', session_id: B, transcript_path: tp(B) }, t3);
+    assert.match(r.context, /T3 \/clear: kurzor T3 6168aa37 presmerovaný na novú session 4c91917d/);
+    assert.equal(fs.readlinkSync(tp(A)), `${B}.jsonl`);
+    assert.equal(fs.readFileSync(fs.readdirSync(dir).filter((f) => f.includes('.pre-clear-')).map((f) => path.join(dir, f))[0], 'utf8'), 'old\n');
+    // T3 resumes A (the link): the cursor stays A; a second /clear re-points the link
+    fx.hook('session-start.mjs', { source: 'resume', session_id: A, transcript_path: tp(A) }, t3);
+    r = fx.hook('session-start.mjs', { source: 'clear', session_id: C, transcript_path: tp(C) }, t3);
+    assert.equal(fs.readlinkSync(tp(A)), `${C}.jsonl`);
+    assert.equal(fs.readdirSync(dir).filter((f) => f.includes('.pre-clear-')).length, 1);
+    assert.equal(readThreadState(fx.brain, 'a1').t3_cleared_to, C);
+    // outside T3 nothing changes; unknown cursor (no record, no provider log) is reported
+    assert.doesNotMatch(fx.hook('session-start.mjs', { source: 'clear', session_id: B, transcript_path: tp(B) }).context, /T3 \/clear/);
+    const fy = setup({ thread: 'b9' });
+    try {
+      r = fy.hook('session-start.mjs', { source: 'clear', session_id: B, transcript_path: tp(B) }, { env: { T3CODE_THREAD_ID: 'b9', WORKFLOW_T3_PROVIDER_LOGS: path.join(fx.root, 'nologs') } });
+      assert.match(r.context, /T3 \/clear: neznámy kurzor/);
+      // provider-log fallback: the last query.open resume id
+      const logs = path.join(fy.root, 'logs');
+      fs.mkdirSync(logs);
+      fs.writeFileSync(path.join(logs, 'events.mcp-b9.log'), `{"payload":{"type":"query.open","options":{"model":"x","resume":"${A}","cwd":"/x"}}}\n`);
+      r = fy.hook('session-start.mjs', { source: 'clear', session_id: C, transcript_path: tp(C) }, { env: { T3CODE_THREAD_ID: 'mcp:b9', WORKFLOW_T3_PROVIDER_LOGS: logs } });
+      assert.match(r.context, /kurzor T3 6168aa37 presmerovaný na novú session 0dec3bb3/);
+    } finally { fy.cleanup(); }
   } finally { fx.cleanup(); }
 });

@@ -70,7 +70,7 @@ function finishUnit(ctx, id) {
     if (n >= ctx.policy.thresholds.procedure_repeats && procedures.includes(name)) {
       notes.push(rejectedProposal(ctx.brainDir, name)
         ? `procedure ${name} ${n}x: skill was rejected earlier, no new proposal (P-005)`
-        : `procedure ${name} ${n}x: propose a skill to the operator (name, trigger, steps, script); on approval: save skill <name> --origin routine --from-procedure ${name} (P-005)`);
+        : `procedure ${name} ${n}x: create the skill yourself, no operator approval (name, trigger, steps, script): save skill <name> --origin routine --from-procedure ${name} (P-005)`);
     }
   }
   for (const [key, n] of d.counts) {

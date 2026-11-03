@@ -1,0 +1,42 @@
+{
+  "about": "T3 workarounds of the workflow (PLAN M-decision 35). Every T3 upgrade runs `node <plugin>/bin/t3-workarounds.mjs check`; the code of each workaround carries the marker `T3-WORKAROUND(<id>)`.",
+  "workarounds": [
+    {
+      "id": "t3-clear-cursor",
+      "title": "After /clear T3 keeps resuming the session it opened first; the hook links <cursor>.jsonl to the new session's transcript",
+      "upstream": { "repo": "pingdotgg/t3code", "issue": 24152, "fix_pr": 24168 },
+      "files": ["scripts/t3-clear.mjs", "hooks/session-start.mjs", "scripts/boot.mjs"],
+      "depends_on": [
+        "provider log <t3-home>/logs/provider/events.<thread, ':' -> '-'>.log with lines `[<ISO time>] ...\"type\":\"query.open\",\"options\":{...\"resume\":\"<session id>\"`",
+        "T3 resumes the session id it opened with (claudeAgent resume cursor)",
+        "T3 sets T3CODE_THREAD_ID in the agent's environment"
+      ],
+      "auto": ["provider-log", "upstream"],
+      "pilot": "pilot thread: say a code word, /clear, ask for a second word, restart the query (interrupt or T3 restart); the thread must answer from the session after /clear",
+      "remove_when": "fix PR merged and contained in the installed T3 version; then remove the marked code and this entry"
+    },
+    {
+      "id": "hook-message-hidden",
+      "title": "T3 does not show hook systemMessage; the agent prints the status block in its first reply (P-050)",
+      "upstream": null,
+      "files": ["scripts/boot.mjs"],
+      "depends_on": ["T3 hides `systemMessage` of hooks"],
+      "auto": [],
+      "pilot": "new pilot thread: does T3 show the SessionStart systemMessage? if yes, the agent-printed block is shown twice and can be dropped",
+      "remove_when": "T3 shows hook systemMessage"
+    },
+    {
+      "id": "t3-cli-title",
+      "title": "The hook cannot rename a thread; it reads the title via the T3 CLI and asks the agent to rename (P-036); topics start threads via the CLI",
+      "upstream": null,
+      "files": ["scripts/thread-title.mjs", "scripts/topic.mjs"],
+      "depends_on": [
+        "`t3 thread show --json <thread>` prints {\"thread\":{\"threadId\",\"title\"}}",
+        "`t3 thread start --json` prints the new thread's id"
+      ],
+      "auto": ["cli-show"],
+      "pilot": "pilot: `topic create` from a thread holding a topic opens a new T3 thread titled by the topic",
+      "remove_when": "hooks can rename threads (no CLI dependency)"
+    }
+  ]
+}

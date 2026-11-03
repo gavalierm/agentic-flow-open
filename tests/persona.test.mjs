@@ -154,3 +154,46 @@ test('persona: writes into a managed sibling project and its topic copies pass; 
     assert.deepEqual(out, {}, 'cd into the managed project: the relative target is not in the persona brain');
   } finally { p.cleanup(); }
 });
+
+test('persona: a managed project without brain (no .workflow.json, plugin in settings) is not outside (alice 2026-11-03: 5 Edit asks in agentic-flow)', () => {
+  const p = persona();
+  try {
+    assert.equal(p.run('adapter.mjs', ['claude-code', '--brain', '.']).status, 0);
+    const flow = path.join(p.root, 'flow');
+    fs.mkdirSync(path.join(flow, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(flow, '.claude', 'settings.json'), '{"enabledPlugins":{"workflow@skills-dir":true}}');
+    git(flow, 'init', '-q');
+    let out = p.hook({ tool_name: 'Write', tool_input: { file_path: path.join(flow, 'hooks', 'new.mjs'), content: 'x' } });
+    assert.notEqual(out.hookSpecificOutput?.permissionDecision, 'ask');
+    const other = path.join(p.root, 'other');
+    fs.mkdirSync(path.join(other, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(other, '.claude', 'settings.json'), '{"enabledPlugins":{"x@y":true}}');
+    out = p.hook({ tool_name: 'Write', tool_input: { file_path: path.join(other, 'x.txt'), content: 'x' } });
+    assert.equal(out.hookSpecificOutput.permissionDecision, 'ask', 'a repo without the workflow plugin is outside');
+    const pilot = path.join(p.root, 'pilot', 'project-a', 'pilot-1');
+    fs.mkdirSync(pilot, { recursive: true }); fs.writeFileSync(path.join(pilot, '.workflow.json'), '{"brain":"../brain-1"}');
+    git(pilot, 'init', '-q');
+    out = p.hook({ tool_name: 'Write', tool_input: { file_path: path.join(pilot, 'scratch', 'x.txt'), content: 'x' } });
+    assert.notEqual(out.hookSpecificOutput?.permissionDecision, 'ask', 'nested workflow project (pilot)');
+  } finally { p.cleanup(); }
+});
+
+test('persona: lasting documents go to docs/ (written directly, committed by save docs); scratch stays a work dir (alice 2026-11-03)', () => {
+  const p = persona();
+  try {
+    assert.equal(p.run('adapter.mjs', ['claude-code', '--brain', '.']).status, 0);
+    const doc = path.join(p.dir, 'docs', 'ai-news', 'reports', '2026-11-04.md');
+    let out = p.hook({ tool_name: 'Write', tool_input: { file_path: doc, content: '# Report\n' } });
+    assert.deepEqual(out.hookSpecificOutput?.permissionDecision, undefined, JSON.stringify(out));
+    out = p.hook({ tool_name: 'Bash', tool_input: { command: `mkdir -p docs/ai-news && echo x > docs/ai-news/brief.md` } });
+    assert.equal(out.hookSpecificOutput?.permissionDecision, undefined, JSON.stringify(out));
+    fs.mkdirSync(path.dirname(doc), { recursive: true });
+    fs.writeFileSync(doc, '# Report\n');
+    const r = p.run('save.mjs', ['docs', '--message', 'ai-news report']);
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.out, /written: docs\/ai-news\/reports\/2026-11-04\.md/);
+    assert.match(git(p.dir, 'log', '-1', '--format=%s'), /\[brain-script\] docs: ai-news report/);
+    assert.equal(git(p.dir, 'status', '--porcelain'), '');
+    assert.match(p.run('save.mjs', ['docs']).out, /nothing to commit/);
+  } finally { p.cleanup(); }
+});

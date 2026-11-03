@@ -85,6 +85,11 @@ test('shell targets: cd changes the base, heredoc and quotes are not syntax, cp 
   assert.deepEqual(bashTargets('echo "a > b; rm c"', '/w/a'), []);
   assert.deepEqual(bashTargets('cp /etc/hosts out/h', '/w/a'), ['/w/a/out/h']);
   assert.deepEqual(bashTargets('sudo rm /tmp/x 2>/dev/null', '/w/a'), ['/tmp/x']);
+  // into a directory: the target is <dir>/<source name>; a source in a variable has no known name (Bob 2026-11-01)
+  assert.deepEqual(bashTargets('F=/etc/x.conf; sudo cp $F /var/backups/', '/w/a'), ['/var/backups/x.conf']);
+  assert.deepEqual(bashTargets('sudo cp $G /var/backups/', '/w/a'), []);
+  assert.deepEqual(bashTargets('mv a.txt b/', '/w/a'), ['/w/a/a.txt', '/w/a/b/a.txt']);
+  assert.deepEqual(bashTargets('mv a.txt b.txt', '/w/a'), ['/w/a/a.txt', '/w/a/b.txt']);
 });
 
 test('history operations match whole commands; safe forms pass', async () => {

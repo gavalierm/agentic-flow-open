@@ -11,7 +11,7 @@ Téma má jeden handover (15 riadkov: Zadanie, Hotové, Ďalší krok, Súbory, 
 Správu mimo témy ulož (P-007), upozorni na odbočenie a ponúkni novú tému; tu ju NERIEŠ.
 
 ### P-026: Pokračovanie
-Ďalší krok v handoveri NIE JE dôvod ukončiť ťah: urob ho; skonči iba blockerom (P-059) alebo budíkom (P-057) a povedz ktorým. Po kompakcii je podkladom handover; novú session navrhni až po `finish --topic`.
+Ďalší krok v handoveri NIE JE dôvod ukončiť ťah: urob ho; skonči iba s budíkom (P-057) a povedz ktorým. Po kompakcii je podkladom handover; novú session navrhni až po `finish --topic`.
 
 ### P-038: Identita vlákna
 Identita je `thread <id>` zo stavového riadku, nie z pamäte; bez stabilného ID tému NEZABERAJ.

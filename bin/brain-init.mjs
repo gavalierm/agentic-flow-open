@@ -1,13 +1,19 @@
 #!/usr/bin/env node
 // Create or attach a brain repository from templates/brain (P-024, P-018, P-040).
-//   brain-init.mjs <path> [--attach] [--remote <url>] [--project <dir>]
+//   brain-init.mjs <path> [--attach] [--remote <url>] [--project <dir>] [--persona]
+// --persona: the repository (remote and directory) must be named agent-<name>.
 import fs from 'node:fs';
 import path from 'node:path';
 import { PLUGIN_ROOT, copyDir, git, fail, parseArgs, exists } from '../scripts/util.mjs';
+import { assertPersonaRemote, PERSONA_REPO_RE } from '../scripts/persona-name.mjs';
 import { BRAIN_COMMIT_TAG, BRAIN_SCRIPT_ENV, brainScriptEnv } from '../scripts/config.mjs';
 
-export function brainInit(target, { attach = false, remote = null, project = null } = {}) {
+export function brainInit(target, { attach = false, remote = null, project = null, persona = false } = {}) {
   const brainDir = path.resolve(target);
+  if (persona) {
+    if (!PERSONA_REPO_RE.test(path.basename(brainDir))) throw new Error(`persona directory must be named agent-<name>, got "${path.basename(brainDir)}"`);
+    if (remote) assertPersonaRemote(remote);
+  }
   const template = path.join(PLUGIN_ROOT, 'templates', 'brain');
   const env = brainScriptEnv();
   const created = [];
@@ -80,9 +86,9 @@ export function brainInit(target, { attach = false, remote = null, project = nul
 if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('brain-init.mjs')) {
   const args = parseArgs(process.argv.slice(2));
   const [target] = args._;
-  if (!target) fail('usage: brain-init.mjs <path> [--attach] [--remote <url>] [--project <dir>]');
+  if (!target) fail('usage: brain-init.mjs <path> [--attach] [--remote <url>] [--project <dir>] [--persona]');
   try {
-    const res = brainInit(target, { attach: !!args.attach, remote: args.remote || null, project: args.project || null });
+    const res = brainInit(target, { attach: !!args.attach, remote: args.remote || null, project: args.project || null, persona: !!args.persona });
     process.stdout.write(`brain ${args.attach ? 'attached' : 'created'}: ${res.brainDir}\n${res.created.map((c) => `- ${c}`).join('\n')}\n`);
   } catch (err) {
     fail(err.message);

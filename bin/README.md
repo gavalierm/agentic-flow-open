@@ -6,6 +6,7 @@ Vstupné body skriptov, volané ako `node <plugin>/bin/<name>.mjs` v koreni proj
 |---|---|---|
 | `brain.mjs write|remove|sync|status` | P-040, P-037, P-025 | jediný zapisovač do brain: zápis, commit so značkou `[brain-script]`, push, kontrola nesúhlasu, retry na `index.lock`, kontrola držiteľa |
 | `brain-init.mjs <path> [--attach] [--remote] [--project]` | P-024, P-018, P-040 | založenie brain zo `templates/brain/` alebo aktivácia klonu: `core.hooksPath`, `local/` |
+| `persona-create.mjs <meno> [--root] [--token-file]` | P-024 | nová persona: repo vždy `agent-<meno>` (skript ho odvodí, pri existujúcom repe skončí chybou), súkromné repo + brain; `brain-init.mjs --persona` vynúti prefix v adrese aj adresári |
 | `brain-precommit.mjs pre-commit|commit-msg` | P-040 | kontrolná logika git hookov brain (volajú ju shimy z `templates/brain/.githooks/`) |
 | `rules.mjs [--check]` | P-035, P-022 | zostavenie pravidiel z vrstiev, výpis výnimiek, kontrola limitov |
 | `index.mjs` | P-039, P-010 | generovanie indexov do `<brain>/local/index/`, kontrola limitov |
@@ -17,6 +18,7 @@ Vstupné body skriptov, volané ako `node <plugin>/bin/<name>.mjs` v koreni proj
 | `finish.mjs [--topic] --verified` | P-029, P-005, P-006, P-036 | skript skillu `finish` |
 | `error.mjs list|check|resolve` | P-003, P-028 | skript skillu `error` |
 | `delegate.mjs prepare|check` | P-027, P-028 | skript skillu `delegate` |
+| `t3-workarounds.mjs list|check [--t3-home] [--t3] [--thread] [--no-upstream] [--json]` | PLAN 35 | register T3 workaroundov (`docs/t3-workarounds.json`) a ich kontrola po každom upgrade T3; `FAIL` → exit 1 |
 | `consolidate.mjs report` | P-010 | skript skillu `consolidate` |
 | `log.mjs flush|failures|names` | P-030 | logy pozorovaní (volá ich hook Stop) |
 | `comms.mjs status|count|list|receive|ack|send|notices|decide|register` | P-041, P-042, P-044, P-047 | skript skillu `comms`: obal nad klientom `agentic-comms` s konfiguráciou projektu; telo správy vypisuje ako dáta |
