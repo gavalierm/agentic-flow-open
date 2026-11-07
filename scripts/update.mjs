@@ -19,6 +19,9 @@ export const PIN_MIN = 'v0.9.11';
 
 /** Brain policy `workflow_version` (P-040): every machine of the brain runs that release, newer or older (from PIN_MIN). */
 export function pinClone(root, version, { min = PIN_MIN } = {}) {
+  // "latest": every session start moves the machine to the newest release of origin (another operator's machine
+  // follows each release without editing its pin; a development branch never reaches it). Operator 2026-11-07.
+  if (String(version) === 'latest') return updateClone(root);
   const want = /^v/.test(String(version)) ? String(version) : `v${version}`;
   if (!semver(want).length) return { status: 'failed', to: want, reason: `workflow_version "${version}" is not a release tag vX.Y.Z` };
   if (newer(min, want)) return { status: 'failed', to: want, reason: `${want} predates workflow_version (first in ${min}): that release would not follow a later change of the pin; pin ${min} or newer` };

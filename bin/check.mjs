@@ -19,7 +19,7 @@ let pin = null;
 try { pin = loadContext({ requireBrain: false }).policy?.workflow_version || null; } catch { /* no context: newest release */ }
 const up = pin ? pinClone(PLUGIN_ROOT, pin) : updateClone(PLUGIN_ROOT);
 if (up.status === 'updated') out(`updated: workflow ${up.from} -> ${up.to}${pin ? ' (brain policy workflow_version)' : ''}`);
-else if (up.status === 'current') out(pin ? `release ${up.to} is the version pinned by the brain policy (workflow_version)` : `release ${up.to} is the newest`);
+else if (up.status === 'current') out(pin && pin !== 'latest' ? `release ${up.to} is the version pinned by the brain policy (workflow_version)` : `release ${up.to} is the newest`);
 else out(`not updated: ${up.reason}${up.status === 'failed' ? ' (report it with the output)' : ''}`);
 const installed = shortSha(PLUGIN_ROOT);
 const tag = git(['describe', '--tags', '--exact-match'], { cwd: PLUGIN_ROOT }).stdout || 'untagged';

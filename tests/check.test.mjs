@@ -74,7 +74,13 @@ test('pinClone: brain policy workflow_version moves a release install to that ta
     g(origin, 'commit', '-q', '--allow-empty', '-m', 'v1.0.3'); g(origin, 'tag', 'v1.0.3');
     assert.deepEqual(pinClone(clone, 'v1.0.3'), { status: 'updated', from: 'v1.0.1', to: 'v1.0.3' }, 'tag fetched from origin');
     assert.match(pinClone(clone, 'v1.0.9').reason, /release v1.0.9 does not exist/);
-    assert.match(pinClone(clone, 'latest').reason, /not a release tag/);
+    assert.match(pinClone(clone, 'newest').reason, /not a release tag/);
+    // "latest" follows the newest release of origin at every session start (operator 2026-11-07: another machine
+    // should get each release without editing its pin).
+    g(origin, 'commit', '-q', '--allow-empty', '-m', 'v1.0.4'); g(origin, 'tag', 'v1.0.4');
+    assert.deepEqual(pinClone(clone, 'latest'), { status: 'updated', from: 'v1.0.3', to: 'v1.0.4' });
+    assert.equal(pinClone(clone, 'latest').status, 'current');
+    g(clone, 'checkout', '-q', 'v1.0.3');
     // SessionStart note: switch announced; a development clone (branch) stays without a note.
     g(clone, 'checkout', '-q', 'v1.0.1');
     assert.match(pinWorkflow({ policy: { workflow_version: 'v1.0.3' } }, clone), /workflow switched v1.0.1 -> v1.0.3 per brain policy/);
