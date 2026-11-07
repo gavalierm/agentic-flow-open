@@ -75,13 +75,14 @@ test('done --topic merges the code copy into the main branch, archives the topic
   } finally { fx.cleanup(); }
 });
 
-test('done --topic in T3 tells the agent to archive its thread (P-036), outside T3 not', () => {
+test('done --topic in T3 tells the agent to settle its thread, not archive it (P-036, flow-public#6), outside T3 not', () => {
   const fx = setup();
   try {
     assert.equal(fx.run('topic.mjs', ['create', 'd2', '--subject', 'D2']).status, 0);
     let r = fx.run('done.mjs', ['--topic', '--verified', 'x'], { env: { T3CODE_THREAD_ID: 'a1' } });
     assert.equal(r.status, 0, r.out);
-    assert.match(r.stdout, /archive this thread \(tool t3_thread_organize, action archive/);
+    assert.match(r.stdout, /settle this thread \(tool t3_thread_organize, action settle, no threadId\)/);
+    assert.doesNotMatch(r.stdout, /action archive/);
     assert.equal(fx.run('topic.mjs', ['create', 'd3', '--subject', 'D3']).status, 0);
     r = fx.run('done.mjs', ['--topic', '--verified', 'x']);
     assert.equal(r.status, 0, r.out);

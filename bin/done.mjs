@@ -48,13 +48,17 @@ function guardThread(ctx) {
   if (!args.verified || args.verified === true) fail('state how the result was verified: --verified "<one observation>" (P-020)');
 }
 
+// P-036: the closed thread leaves the active list. `settle` applies when the turn ends; `archive` of the own thread
+// ends the provider stream at once and the turn fails (flow-public#6, seen on Windows and Linux).
+const SETTLE_THREAD = 'thread: as the last step of this turn settle this thread (tool t3_thread_organize, action settle, no threadId); do not archive it, archiving the own thread fails the running turn (P-036)';
+
 function doneUnit(ctx, id) {
   if (!id && !args.verified && !args.procedures && !args.derivations) {
     // Thread without a topic and without work in this context (e.g. after /clear): done just closes the thread,
     // nothing is recorded and nothing needs verifying (operator 2026-11-02: done after /clear asked what to close).
     if (inSubagent()) fail('done refused in subagent (P-025)');
     out('thread closed: no topic and no recorded work in this thread, nothing to write. Do not ask the operator what to close (P-059).');
-    if (process.env.T3CODE_THREAD_ID) out('thread: as the last step of this turn archive this thread (tool t3_thread_organize, action archive, no threadId), P-036');
+    if (process.env.T3CODE_THREAD_ID) out(SETTLE_THREAD);
     return;
   }
   if (id) guard(ctx, id);
@@ -83,7 +87,7 @@ function doneUnit(ctx, id) {
     const res = brainWrite(ctx, { ops, message: `done: unit of work done without a topic (verified: ${String(args.verified).slice(0, 60)})` });
     out(formatWriteResult(res, []));
     out('unit closed: this thread held no topic, so there is no handover. The next unit of work starts in a new session with its own topic (skill workflow:topic, P-026).');
-    if (process.env.T3CODE_THREAD_ID) out('thread: as the last step of this turn archive this thread (tool t3_thread_organize, action archive, no threadId), P-036');
+    if (process.env.T3CODE_THREAD_ID) out(SETTLE_THREAD);
     for (const n of notes) out(n);
     return;
   }
@@ -169,11 +173,11 @@ function doneTopic(ctx, id) {
   const comms = registerTopic(ctx, id, { close: true });
   if (comms.ok) out(`mail: topic ${id} closed in the mail service (new mail refused, waiting mail returned to the senders)`);
   else if (!comms.skipped) out(`mail: closing ${id} in the mail service failed (${comms.reason}); the next session start retries`);
-  // P-036: the topic's T3 thread is archived with the topic (only inside T3). A thread that also holds the persona main
-  // topic is never archived (P-045; alice 2026-11-02: main stayed held by an archived thread and @alice/main went unread).
+  // P-036: the topic's T3 thread is settled with the topic (only inside T3). A thread that also holds the persona main
+  // topic is never settled or archived (P-045; alice 2026-11-02: main stayed held by an archived thread and @alice/main went unread).
   const holdsMain = heldTopics(ctx.brainDir, ctx.thread).some((t) => t.kind === 'main');
-  if (holdsMain) out('thread: this thread holds the persona main topic, so it stays open: do not archive it (P-045)');
-  else if (process.env.T3CODE_THREAD_ID) out('thread: as the last step of this turn archive this thread (tool t3_thread_organize, action archive, no threadId), P-036');
+  if (holdsMain) out('thread: this thread holds the persona main topic, so it stays open: do not settle or archive it (P-045)');
+  else if (process.env.T3CODE_THREAD_ID) out(SETTLE_THREAD);
   for (const w of buildIndexes(ctx.brainDir, ctx.policy).warnings) out(`limit: ${w}`);
 }
 

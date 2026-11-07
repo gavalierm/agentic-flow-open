@@ -26,7 +26,7 @@ test('done --topic closes the topic in the mail: waiting mail bounces, new mail 
     const fin = fx.run('done.mjs', ['--topic', '--topic-id', 'gamma', '--verified', 'done'], { env: { T3CODE_THREAD_ID: 'a1' } });
     assert.equal(fin.status, 0, fin.out);
     assert.match(fin.stdout, /mail: topic gamma closed in the mail service/);
-    assert.match(fin.stdout, /holds the persona main topic, so it stays open: do not archive it/);
+    assert.match(fin.stdout, /holds the persona main topic, so it stays open: do not settle or archive it/);
     assert.doesNotMatch(fin.stdout, /t3_thread_organize/);
     assert.equal(comms.topic('project', 'gamma').state, 'closed');
     assert.equal(comms.topic('project', 'gamma').holder, null);
