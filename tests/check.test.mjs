@@ -103,5 +103,10 @@ test('pinClone: brain policy workflow_version moves a release install to that ta
     assert.match(pin(b, 'v1.0.4'), /switched v1.0.3 -> v1.0.4/, 'the operator changed the pin of brain b');
     assert.match(pin(a, 'v1.0.3'), /brain-b pins v1.0.4/);
     assert.equal(pin(a, 'v1.0.4'), null, 'same pin: no conflict');
+    // A brain without a pin is listed too (brain.mjs pin --all); adding a pin there counts as the operator's change.
+    const c = path.join(dir, 'brain-c'); fs.mkdirSync(c);
+    assert.equal(pinWorkflow({ brainDir: c, policy: {} }, clone, penv), null);
+    assert.equal(JSON.parse(fs.readFileSync(penv.WORKFLOW_PIN_FILE, 'utf8')).brains[fs.realpathSync(c)], null);
+    assert.match(pin(c, 'v1.0.3'), /switched v1.0.4 -> v1.0.3/);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

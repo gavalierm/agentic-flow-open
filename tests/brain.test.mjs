@@ -187,3 +187,31 @@ test('handover changed on two machines: both versions kept with a notice, pushed
     assert.match(merged, /next from A[\s\S]*handover conflict[\s\S]*next from B/);
   } finally { fx.cleanup(); }
 });
+
+// flow-public#7: a hand edit of policy.json is refused by the pre-commit and blocks the update from origin.
+test('pin: workflow_version through the brain writer, --all pins every brain the machine knows, other keys kept', () => {
+  const a = setup();
+  const b = setup({ thread: 'b2' });
+  try {
+    const pinFile = path.join(a.root, 'pin.json');
+    fs.writeFileSync(pinFile, JSON.stringify({ brains: { [fs.realpathSync(b.brain)]: null, [path.join(a.root, 'gone')]: 'v0.9.12' } }));
+    const env = { WORKFLOW_PIN_FILE: pinFile };
+    fs.writeFileSync(path.join(a.brain, 'policy.json'), JSON.stringify({ topics: { stale_machine_hours: 6 }, workflow_version: 'v0.9.11' }));
+    assert.match(a.run('brain.mjs', ['pin', 'v0.9.1'], { env }).out, /predates workflow_version/);
+    assert.match(a.run('brain.mjs', ['pin', 'next'], { env }).out, /not a release tag/);
+    const one = a.run('brain.mjs', ['pin', 'v0.9.16'], { env });
+    assert.equal(one.status, 0, one.out);
+    assert.match(one.stdout, /written: policy\.json/);
+    assert.match(one.stdout, /other brains on this machine: brain\.mjs pin --all/);
+    assert.deepEqual(JSON.parse(a.read('policy.json')), { topics: { stale_machine_hours: 6 }, workflow_version: 'v0.9.16' });
+    assert.equal(a.git(a.brain, 'status', '--porcelain'), '', 'nothing left uncommitted');
+    assert.match(a.git(a.origin, 'log', '-1', '--format=%s'), /^\[brain-script\] pin workflow v0\.9\.16$/);
+    assert.ok(!b.exists('policy.json') || !/workflow_version/.test(b.read('policy.json')), 'without --all only this brain');
+    const all = a.run('brain.mjs', ['pin', '--all', 'latest'], { env });
+    assert.equal(all.status, 0, all.out);
+    assert.equal(JSON.parse(a.read('policy.json')).workflow_version, 'latest');
+    assert.equal(JSON.parse(b.read('policy.json')).workflow_version, 'latest');
+    assert.match(b.git(b.origin, 'log', '-1', '--format=%s'), /pin workflow latest/);
+    assert.doesNotMatch(all.stdout, /gone/, 'a brain that no longer exists is skipped');
+  } finally { a.cleanup(); b.cleanup(); }
+});

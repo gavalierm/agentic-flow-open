@@ -4,7 +4,7 @@
 //     turn: 'ok'|'unknown'|'old' (old: no opened_at, --opened-at is an unknown option), opened_at: '<iso>' (answer of open),
 //     message: { <id>: { ...GET /message fields } }
 //     register_fail: true (register-topic exits 2: comms unavailable), by_topic: true (count with --topic lists only the
-//     messages of that topic, thread-only count lists none) }
+//     messages of that topic, thread-only count lists none), wake: { running, ... } (count field of comms >= 0.4.6) }
 // Every call is appended to STUB_COMMS_LOG as one JSON line (argv). Interface as in hotfix-contract (count ids, send --ttl, turn).
 import fs from 'node:fs';
 
@@ -37,6 +37,7 @@ switch (cmd) {
     const listed = state.by_topic ? (opt('topic') ? messages.filter((m) => m.topic === opt('topic')) : []) : messages;
     const res = { total: listed.length, blocker: listed.filter((m) => m.level === 'blocker').length, cached: false, unavailable: false };
     if (state.ids !== false) res.ids = listed.map((m) => m.id);
+    if (state.wake) res.wake = state.wake; // comms >= 0.4.6: { running, pid, heartbeat_at } of this machine's wake
     res.items = listed.map((m) => ({ id: m.id, level: m.level, reply_to: m.reply_to || null, to_thread: m.to_thread || null, sender: m.sender || 'bob', created_at: m.created_at || '2026-11-01T10:00:00.000Z' }));
     print(res);
     break;

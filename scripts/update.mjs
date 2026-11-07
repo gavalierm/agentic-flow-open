@@ -1,5 +1,8 @@
 // Update of an installed workflow clone to the newest release tag (skill check). Only a release install is switched:
 // HEAD exactly on a tag `v*`, clean working tree. A dev clone (branch) or a dirty one is left alone and said so.
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { git } from './util.mjs';
 
 const semver = (t) => (/^v(\d+)\.(\d+)\.(\d+)$/.exec(t) || []).slice(1).map(Number);
@@ -17,14 +20,40 @@ function releaseInstall(root) {
 /** First release that reads `workflow_version`: an older one would ignore every later change of the pin. */
 export const PIN_MIN = 'v0.9.11';
 
+/** Value for `workflow_version`: "latest" or a release tag vX.Y.Z from PIN_MIN; otherwise { error }. */
+export function pinValue(version, { min = PIN_MIN } = {}) {
+  if (String(version) === 'latest') return { want: 'latest' };
+  const want = /^v/.test(String(version)) ? String(version) : `v${version}`;
+  if (!semver(want).length) return { want, error: `workflow_version "${version}" is not a release tag vX.Y.Z` };
+  if (newer(min, want)) return { want, error: `${want} predates workflow_version (first in ${min}): that release would not follow a later change of the pin; pin ${min} or newer` };
+  return { want };
+}
+
+/**
+ * One install serves every project on the machine, the pin lives in each brain (issue flow-public#2).
+ * `~/.config/agentic-flow/pin.json` records which brain set the clone and the pin each brain on this machine had last
+ * time (null: no pin); `brain.mjs pin --all` uses the same list.
+ */
+export function pinFile(env = process.env) {
+  return env.WORKFLOW_PIN_FILE || path.join(env.HOME || os.homedir(), '.config', 'agentic-flow', 'pin.json');
+}
+
+export function readPins(env = process.env) {
+  try { return JSON.parse(fs.readFileSync(pinFile(env), 'utf8')) || {}; } catch { return {}; }
+}
+
+/** Brains this machine has started a session in (from the pin record), existing ones only. */
+export function knownBrains(env = process.env) {
+  return Object.keys(readPins(env).brains || {}).filter((b) => fs.existsSync(path.join(b, '.git')));
+}
+
 /** Brain policy `workflow_version` (P-040): every machine of the brain runs that release, newer or older (from PIN_MIN). */
 export function pinClone(root, version, { min = PIN_MIN } = {}) {
   // "latest": every session start moves the machine to the newest release of origin (another operator's machine
   // follows each release without editing its pin; a development branch never reaches it). Operator 2026-11-07.
   if (String(version) === 'latest') return updateClone(root);
-  const want = /^v/.test(String(version)) ? String(version) : `v${version}`;
-  if (!semver(want).length) return { status: 'failed', to: want, reason: `workflow_version "${version}" is not a release tag vX.Y.Z` };
-  if (newer(min, want)) return { status: 'failed', to: want, reason: `${want} predates workflow_version (first in ${min}): that release would not follow a later change of the pin; pin ${min} or newer` };
+  const { want, error } = pinValue(version, { min });
+  if (error) return { status: 'failed', to: want, reason: error };
   const inst = releaseInstall(root);
   if (!inst.tag) return { ...inst, to: want };
   if (inst.tag === want) return { status: 'current', from: inst.tag, to: want };

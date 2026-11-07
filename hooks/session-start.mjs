@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 // SessionStart (startup, resume, clear, compact): boot sequence P-021 items 1, 3-7. Output class: boot context, limit 15 000 chars.
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { readHookInput, emit, contextOutput, isMain } from '../scripts/hooks-io.mjs';
 import { loadContext } from '../scripts/config.mjs';
@@ -10,7 +9,7 @@ import { readThreadState, writeThreadState } from '../scripts/config.mjs';
 import { installedWorkflow } from '../scripts/update-notice.mjs';
 import { handleT3Session } from '../scripts/t3-clear.mjs';
 import { brainPull, brainPullNote } from '../scripts/brain.mjs';
-import { pinClone } from '../scripts/update.mjs';
+import { pinClone, pinFile, readPins } from '../scripts/update.mjs';
 import { PLUGIN_ROOT } from '../scripts/util.mjs';
 
 export const HOOK_META = { event: 'SessionStart', class: 'boot', limit: '15000 chars', principles: ['P-021', 'P-022', 'P-024', 'P-026', 'P-038', 'P-050'] };
@@ -48,7 +47,11 @@ export function pullBrain(ctx) {
  */
 export function pinWorkflow(ctx, root = PLUGIN_ROOT, env = process.env) {
   const want = ctx.policy?.workflow_version;
-  if (!want) return null;
+  if (!want) {
+    // Brain without a pin: still listed, so `brain.mjs pin --all` reaches it and a pin added later counts as changed.
+    if (ctx.brainDir && readPins(env).brains?.[brainKey(ctx)] === undefined) recordPin(ctx, null, env, false);
+    return null;
+  }
   const conflict = pinConflict(ctx, String(want), env);
   if (conflict) return conflict;
   let r;
@@ -60,19 +63,10 @@ export function pinWorkflow(ctx, root = PLUGIN_ROOT, env = process.env) {
 }
 
 /**
- * One install serves every project on the machine, the pin lives in each brain (issue flow-public#2): two brains with
- * different pins switched the shared clone back and forth at every start. `~/.config/agentic-flow/pin.json` records which
+ * Different pins of brains on one machine (issue flow-public#2): the pin record (scripts/update.mjs pinFile) says which
  * brain set the clone and the pin each brain had last time. The clone follows the brain that set it, or a brain whose pin
  * the operator just changed; any other brain with a different pin reports the conflict and does not switch.
  */
-function pinFile(env) {
-  return env.WORKFLOW_PIN_FILE || path.join(env.HOME || os.homedir(), '.config', 'agentic-flow', 'pin.json');
-}
-
-function readPins(env) {
-  try { return JSON.parse(fs.readFileSync(pinFile(env), 'utf8')) || {}; } catch { return {}; }
-}
-
 function brainKey(ctx) {
   try { return fs.realpathSync(ctx.brainDir); } catch { return ctx.brainDir; }
 }
@@ -85,7 +79,7 @@ export function pinConflict(ctx, want, env = process.env) {
   const changed = pins.brains?.[brain] !== undefined && pins.brains[brain] !== want;
   if (!owner || owner === brain || changed || pins.clone.version === want || !fs.existsSync(owner)) return null;
   recordPin(ctx, want, env, false);
-  return `workflow not switched to ${want} (brain policy workflow_version): brain ${owner} pins ${pins.clone.version} and this machine has one install for all projects; set the same workflow_version in every brain on this machine (tell the operator) (P-040)`;
+  return `workflow not switched to ${want} (brain policy workflow_version): brain ${owner} pins ${pins.clone.version} and this machine has one install for all projects; set the same workflow_version in every brain on this machine: brain.mjs pin <version> --all (tell the operator) (P-040)`;
 }
 
 function recordPin(ctx, want, env, setClone) {

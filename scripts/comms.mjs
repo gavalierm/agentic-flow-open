@@ -185,6 +185,8 @@ export function mailCount(ctx, held = []) {
     const res = runClient(ctx, ['count', ...queryArgs(q)]);
     if (res.ok) {
       const d = res.data;
+      // comms >= 0.4.6: whether this machine's wake runs (absent when wake never ran here, comms-public#4).
+      if (d.wake && out.wake === undefined) out.wake = d.wake;
       if (d.unavailable) {
         if (d.first_report) out.note = 'comms unavailable';
         if (d.total == null) out.unknown = true; else add(d);
@@ -207,6 +209,7 @@ export function formatMail(mail) {
   if (mail.blockers) s += ` (${mail.blockers} blocker)`;
   if (mail.steers) s += ` (${mail.steers} steer)`;
   if (mail.note) s += ` (${mail.note})`;
+  if (mail.wake && mail.wake.running === false) s += ' | wake: off';
   return s;
 }
 

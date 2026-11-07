@@ -117,6 +117,21 @@ test('no thread and no held topic: the status line says mail is not checked, not
   } finally { fx.cleanup(); }
 });
 
+test('the status line says wake: off when the wake of this machine stopped; running or never-ran wake shows nothing (comms-public#4)', () => {
+  const fx = stubbed({ messages: [], wake: { running: false, pid: null, heartbeat_at: null } });
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'delta', '--subject', 'Delta']).status, 0);
+    let r = fx.hook('user-prompt-submit.mjs', { prompt: 'ahoj' });
+    assert.match(r.context.split('\n')[0], /\| mail: 0 \| wake: off$/, r.context);
+    fx.stub.set({ messages: [], wake: { running: true, pid: 1, heartbeat_at: '2026-11-07T10:00:00Z' } });
+    r = fx.hook('user-prompt-submit.mjs', { prompt: 'ahoj' });
+    assert.doesNotMatch(r.context, /wake: off/);
+    fx.stub.set({ messages: [] }); // older comms or wake never ran on this machine: no field
+    r = fx.hook('user-prompt-submit.mjs', { prompt: 'ahoj' });
+    assert.doesNotMatch(r.context, /wake:/);
+  } finally { fx.cleanup(); }
+});
+
 test('registration failure is printed; a repeated claim or release registers again (already is not a short-circuit) (P-041)', () => {
   const fx = stubbed({ messages: [], register_fail: true });
   try {
