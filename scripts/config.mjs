@@ -198,14 +198,24 @@ export function sameMachine(name, env = process.env) {
 
 const safeMachine = (s) => String(s).trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^[.-]+/, '') || 'machine';
 
-/** Thread state file in <brain>/local/threads/<id>.json (P-047 turn source, pending signals). */
+// A thread id can hold characters Windows forbids in file names (`mcp:launch:…`, `thread:delegated-task:…`); the file
+// name is encoded the way comms names turns/ (encodeURIComponent, plus `*`), so a UUID keeps its plain name.
+const threadFileName = (id) => encodeURIComponent(String(id)).replace(/\*/g, '%2A');
+
+/** Thread state file in <brain>/local/threads/<encoded id>.json (P-047 turn source, pending signals). */
 export function threadStateFile(brainDir, id) {
-  return path.join(brainDir, 'local', 'threads', `${id}.json`);
+  return path.join(brainDir, 'local', 'threads', `${threadFileName(id)}.json`);
+}
+
+// State written before v0.9.15 under the raw id (Linux, macOS); read once, the next write moves it to the encoded name.
+function legacyThreadState(brainDir, id) {
+  if (threadFileName(id) === String(id)) return null;
+  try { return readJson(path.join(brainDir, 'local', 'threads', `${id}.json`), null); } catch { return null; }
 }
 
 export function readThreadState(brainDir, id) {
   if (!brainDir || !id) return { thread: id, turn_source: 'operator', pending_signals: [] };
-  const state = readJson(threadStateFile(brainDir, id), null) || {};
+  const state = readJson(threadStateFile(brainDir, id), null) || legacyThreadState(brainDir, id) || {};
   return { thread: id, turn_source: 'operator', pending_signals: [], ...state };
 }
 
