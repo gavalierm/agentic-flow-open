@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Create or attach a brain repository from templates/brain (P-024, P-018, P-040).
-//   brain-init.mjs <path> [--attach] [--remote <url>] [--project <dir>] [--persona]
+//   brain-init.mjs <path> [--attach [--adopt]] [--remote <url>] [--project <dir>] [--persona]
+// --adopt: a brain from an older setup: its git hooks are replaced by the workflow ones, .gitignore gets the
+// workflow lines, and the change is committed; data stays (the old hooks remain in the git history).
 // --persona: the repository (remote and directory) must be named agent-<name>.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -8,7 +10,7 @@ import { PLUGIN_ROOT, copyDir, git, fail, parseArgs, exists } from '../scripts/u
 import { assertPersonaRemote, PERSONA_REPO_RE } from '../scripts/persona-name.mjs';
 import { BRAIN_COMMIT_TAG, BRAIN_SCRIPT_ENV, brainScriptEnv } from '../scripts/config.mjs';
 
-export function brainInit(target, { attach = false, remote = null, project = null, persona = false } = {}) {
+export function brainInit(target, { attach = false, adopt = false, remote = null, project = null, persona = false } = {}) {
   const brainDir = path.resolve(target);
   if (persona) {
     if (!PERSONA_REPO_RE.test(path.basename(brainDir))) throw new Error(`persona directory must be named agent-<name>, got "${path.basename(brainDir)}"`);
@@ -18,9 +20,11 @@ export function brainInit(target, { attach = false, remote = null, project = nul
   const env = brainScriptEnv();
   const created = [];
   const isRepo = exists(path.join(brainDir, '.git'));
+  let attrsMigration = false;
 
   if (isRepo && !attach) throw new Error(`${brainDir} is already a git repository; use --attach to activate it`);
   if (!isRepo && attach) throw new Error(`${brainDir} is not a git repository; run without --attach to create it`);
+  if (adopt && !attach) throw new Error('--adopt needs --attach');
 
   if (!isRepo) {
     if (exists(brainDir) && fs.readdirSync(brainDir).length) throw new Error(`${brainDir} exists and is not empty`);
@@ -36,6 +40,23 @@ export function brainInit(target, { attach = false, remote = null, project = nul
         git(['checkout', '--quiet', '-B', 'main', 'origin/main'], { cwd: brainDir });
         created.push('checked out main');
       }
+    }
+    if (adopt) {
+      fs.rmSync(path.join(brainDir, '.githooks'), { recursive: true, force: true });
+      const ignore = path.join(brainDir, '.gitignore');
+      if (exists(ignore)) {
+        const have = new Set(fs.readFileSync(ignore, 'utf8').split('\n').map((l) => l.trim()));
+        const add = fs.readFileSync(path.join(template, '.gitignore'), 'utf8').split('\n').map((l) => l.trim()).filter((l) => l && !have.has(l));
+        if (add.length) { fs.appendFileSync(ignore, `${fs.readFileSync(ignore, 'utf8').endsWith('\n') ? '' : '\n'}${add.join('\n')}\n`); created.push('.gitignore: workflow lines added'); }
+      }
+    }
+    // Older template line `* text eol=lf` marked images and fonts as text: a commit would rewrite their bytes.
+    const attrs = path.join(brainDir, '.gitattributes');
+    if (exists(attrs) && /^\* text eol=lf$/m.test(fs.readFileSync(attrs, 'utf8'))) {
+      // Committed below: an uncommitted fix left every attached clone dirty and blocked its sync with origin (P-040).
+      attrsMigration = git(['diff', '--quiet', 'HEAD', '--', '.gitattributes'], { cwd: brainDir }).ok;
+      fs.writeFileSync(attrs, fs.readFileSync(attrs, 'utf8').replace(/^\* text eol=lf$/m, '* text=auto eol=lf'));
+      created.push('.gitattributes: binary files kept as they are');
     }
     // Make sure template infrastructure exists without touching data.
     for (const rel of ['.githooks', '.gitattributes', '.gitignore']) {
@@ -62,6 +83,20 @@ export function brainInit(target, { attach = false, remote = null, project = nul
   fs.mkdirSync(path.join(brainDir, 'local', 'outbox'), { recursive: true });
   created.push('local/');
 
+  if (adopt) {
+    git(['add', '--', '.githooks', '.gitattributes', '.gitignore'], { cwd: brainDir, env });
+    if (!git(['diff', '--cached', '--quiet'], { cwd: brainDir }).ok) {
+      const commit = git(['commit', '--quiet', '-m', `${BRAIN_COMMIT_TAG} adopt brain into the workflow: workflow git hooks`], { cwd: brainDir, env });
+      if (!commit.ok) throw new Error(`adopt commit failed: ${commit.stderr || commit.stdout}`);
+      created.push('committed workflow git hooks');
+    }
+  } else if (attrsMigration) {
+    // Only the template line: other local edits of the file were not clean before, those stay uncommitted.
+    git(['add', '--', '.gitattributes'], { cwd: brainDir, env });
+    const commit = git(['commit', '--quiet', '-m', `${BRAIN_COMMIT_TAG} brain template: .gitattributes keeps binary files as they are`, '--', '.gitattributes'], { cwd: brainDir, env });
+    if (!commit.ok) throw new Error(`.gitattributes commit failed: ${commit.stderr || commit.stdout}`);
+    created.push('committed .gitattributes');
+  }
   if (!isRepo) {
     git(['add', '-A'], { cwd: brainDir, env });
     const commit = git(['commit', '--quiet', '-m', `${BRAIN_COMMIT_TAG} init brain from workflow template`], { cwd: brainDir, env });
@@ -86,9 +121,9 @@ export function brainInit(target, { attach = false, remote = null, project = nul
 if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('brain-init.mjs')) {
   const args = parseArgs(process.argv.slice(2));
   const [target] = args._;
-  if (!target) fail('usage: brain-init.mjs <path> [--attach] [--remote <url>] [--project <dir>] [--persona]');
+  if (!target) fail('usage: brain-init.mjs <path> [--attach [--adopt]] [--remote <url>] [--project <dir>] [--persona]');
   try {
-    const res = brainInit(target, { attach: !!args.attach, remote: args.remote || null, project: args.project || null, persona: !!args.persona });
+    const res = brainInit(target, { attach: !!args.attach, adopt: !!args.adopt, remote: args.remote || null, project: args.project || null, persona: !!args.persona });
     process.stdout.write(`brain ${args.attach ? 'attached' : 'created'}: ${res.brainDir}\n${res.created.map((c) => `- ${c}`).join('\n')}\n`);
   } catch (err) {
     fail(err.message);

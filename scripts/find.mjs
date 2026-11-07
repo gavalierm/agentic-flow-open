@@ -7,18 +7,18 @@ function line(r) {
 }
 
 /** Exact match on key, alias or normalized name/title. */
-export function find(brainDir, query) {
+export function find(brainDir, query, domain = null) {
   const q = normalizeKey(query);
   if (!q) return [];
-  return allRecords(brainDir).filter((r) => normalizedNames(r).has(q)).map(line);
+  return allRecords(brainDir, domain).filter((r) => normalizedNames(r).has(q)).map(line);
 }
 
 /** Word match: every query token occurs among the tokens of key, name, title, aliases or description.
  *  Fallback of the CLI when there is no exact match; save and error keep using exact find(). */
-export function findWords(brainDir, query) {
+export function findWords(brainDir, query, domain = null) {
   const want = tokens(query);
   if (!want.length) return [];
-  return allRecords(brainDir)
+  return allRecords(brainDir, domain)
     .filter((r) => {
       const have = new Set([r.key, r.name, r.title, r.description, ...r.aliases].filter(Boolean).flatMap((v) => tokens(v)));
       return want.every((t) => have.has(t));
@@ -27,10 +27,10 @@ export function findWords(brainDir, query) {
 }
 
 /** Records with the target path/thing in relates_to (P-008). Matches exact value, or basename, or path suffix. */
-export function findRelatesTo(brainDir, target, { validOnly = false } = {}) {
+export function findRelatesTo(brainDir, target, { validOnly = false, domain = null } = {}) {
   const t = String(target).replace(/\\/g, '/').replace(/^\.\//, '');
   const base = t.split('/').pop();
-  return allRecords(brainDir)
+  return allRecords(brainDir, domain)
     .filter((r) => r.relates_to.some((v) => {
       const x = String(v).replace(/\\/g, '/').replace(/^\.\//, '');
       return x === t || t.endsWith('/' + x) || x.endsWith('/' + t) || (x === base && !x.includes('/') && base === t) || normalizeKey(x) === normalizeKey(t);

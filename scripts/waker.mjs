@@ -17,6 +17,11 @@ export const BACKGROUND_WAKER_MS = 2 * 3600_000;
 /** Timer the Stop hook arms itself when the agent ended waiting without one (doubles per repeat, up to the max). */
 export const AUTO_TIMER_MS = 15 * 60_000;
 export const AUTO_TIMER_MAX_MS = 2 * 3600_000;
+/** Waiting on the operator rings in hours, not minutes (operator 2026-11-03: "the interval must be far longer, in hours"). */
+export const OPERATOR_TIMER_MS = 4 * 3600_000;
+export const OPERATOR_TIMER_MAX_MS = 24 * 3600_000;
+/** Rings of a next step that only waits (no own work): then the thread rests until mail or the operator wakes it. */
+export const IDLE_RING_MS = [4 * 3600_000, 12 * 3600_000, 24 * 3600_000];
 /** Reply window after sending mail that needs an answer: the sender is rung then even if nobody replied. */
 export const REPLY_WINDOW_MS = { blocker: 15 * 60_000, assist: 60 * 60_000 };
 
@@ -51,6 +56,20 @@ export function waitingClaim(text) {
     }
   }
   return null;
+}
+
+/** The reply's wait is on the operator (a question, "Pre teba", or the wait names the operator), not on a job. */
+export function operatorWait(text) {
+  if (operatorQuestion(text)) return true;
+  const w = waitingClaim(text);
+  return !!w && new RegExp(`(^|[^${L}])(oper[áa]tor\\S*|teba|tvoj\\S*|tvoje\\S*|vás|vas|operator|you|your)(?![${L}])`, 'iu').test(w);
+}
+
+/** The next step only waits (for the operator, another topic, a reply): the topic has no own work to continue. */
+export function waitOnlyStep(next) {
+  if (typeof next !== 'string' || !next.trim()) return null;
+  const head = next.trim().split(/[;.\n]/)[0];
+  return waitingClaim(head) || (new RegExp(`^(oper[áa]tor|operator)\\s+(rozhodne|odpovie|potvrd[íi]|schv[áa]li|decides|answers|confirms)(?![${L}])`, 'iu').test(head) ? head.slice(0, 60) : null);
 }
 
 /** True when the reply leaves a question to the operator open: it ends with "?" or carries a "Pre teba" / "Blocker" block. */
@@ -90,7 +109,23 @@ export function wakerFromTool(input, now = Date.now()) {
   const bg = (kind) => ({ kind, at, until: new Date(now + BACKGROUND_WAKER_MS).toISOString() });
   if ((tool === 'Bash' || tool === 'PowerShell') && ti.run_in_background === true) return bg('background');
   if ((tool === 'Agent' || tool === 'Task') && (ti.run_in_background === true || /async_launched|running in the background|run_in_background/i.test(respText))) return bg('agent');
-  if (/(^|__)(schedule_task|t3_background_wait|delegate_task)$/.test(tool) || ['CronCreate', 'ScheduleWakeup', 'Monitor'].includes(tool)) return bg('scheduler');
+  // A harness schedule rings this thread on every run, also turns later: it stays a waker until removed, not 2 h
+  // (2026-11-03: a daily 06:00 report task did not count in the evening, so auto timers woke the thread for nothing).
+  if (/(^|__)schedule_task$/.test(tool)) {
+    if (ti.bindToCurrentThread === false) return null;
+    const id = ti.scheduledTaskId || /"(?:scheduledTaskId|id)"\s*:\s*"([^"]+)"/.exec(respText)?.[1] || null;
+    if (ti.enabled === false) return { kind: 'scheduler', id, remove: true, at };
+    return { kind: 'scheduler', id, recurring: true, at };
+  }
+  if (/(^|__)delete_scheduled_task$/.test(tool)) return { kind: 'scheduler', id: ti.scheduledTaskId || ti.id || null, remove: true, at };
+  if (tool === 'CronCreate' && ti.recurring !== false) return { kind: 'scheduler', id: /"id"\s*:\s*"([^"]+)"/.exec(respText)?.[1] || null, recurring: true, at };
+  if (tool === 'CronCreate') {
+    const fire = Number(/"nextFireAt"\s*:\s*(\d{12,})/.exec(respText)?.[1]);
+    return { kind: 'scheduler', at, until: new Date(Math.max(now + BACKGROUND_WAKER_MS, Number.isFinite(fire) ? fire + 15 * 60_000 : 0)).toISOString() };
+  }
+  if (tool === 'CronDelete') return { kind: 'scheduler', id: ti.id || null, remove: true, at };
+  if (tool === 'ScheduleWakeup' && Number(ti.delaySeconds) > 0) return { kind: 'scheduler', at, until: new Date(now + Math.max(BACKGROUND_WAKER_MS, Number(ti.delaySeconds) * 1000 + 15 * 60_000)).toISOString() };
+  if (/(^|__)(t3_background_wait|delegate_task)$/.test(tool) || ['ScheduleWakeup', 'Monitor'].includes(tool)) return bg('scheduler');
   if ((tool === 'Bash' || tool === 'PowerShell') && /comms\.mjs\s+send\b/.test(String(ti.command || '')) && !/--reply-to/.test(String(ti.command || '')) && /(^|\n)sent \S+/.test(respText)) return bg('mail');
   return null;
 }
@@ -106,15 +141,17 @@ export function validWaker(state, now = Date.now()) {
   const timer = activeTimer(state, now);
   if (timer) return { kind: 'timer', at: timer.at };
   const started = Date.parse(state?.turn_started_at || '') || 0;
-  return (state?.wakers || []).find((w) => Date.parse(w.at) >= started || (w.until && Date.parse(w.until) > now)) || null;
+  return (state?.wakers || []).find((w) => w.recurring || Date.parse(w.at) >= started || (w.until && Date.parse(w.until) > now)) || null;
 }
 
 export function recordWaker(brainDir, thread, waker) {
   if (!brainDir || !thread || !waker) return;
   const state = readThreadState(brainDir, thread);
   const now = Date.now();
-  const keep = (state.wakers || []).filter((w) => w.until && Date.parse(w.until) > now).slice(-20);
-  writeThreadState(brainDir, thread, { ...state, wakers: [...keep, waker] });
+  // A removed schedule drops its waker (by id; without an id every recurring one, the safe side: auto timers return).
+  const removed = (w) => waker.remove && w.recurring && (!waker.id || !w.id || w.id === waker.id);
+  const keep = (state.wakers || []).filter((w) => !removed(w) && (w.recurring || (w.until && Date.parse(w.until) > now))).slice(-20);
+  writeThreadState(brainDir, thread, { ...state, wakers: waker.remove ? keep : [...keep.filter((w) => !(waker.id && w.id === waker.id)), waker] });
 }
 
 /** Set the thread timer: the wake module rings the thread at `at` with the step `then` (via the closed turn, P-057). */

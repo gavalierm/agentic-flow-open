@@ -48,3 +48,41 @@ test('updateClone: a release install moves to the newest release tag; a branch o
     assert.equal(updateClone(clone).status, 'skipped', 'a branch (dev clone) is not switched');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('pinClone: brain policy workflow_version moves a release install to that tag, older or newer; fetches a missing tag', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { git } = await import('../scripts/util.mjs');
+  const { pinClone } = await import('../scripts/update.mjs');
+  const { pinWorkflow } = await import('../hooks/session-start.mjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-pin-'));
+  const env = { GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
+  const g = (cwd, ...a) => { const r = git(a, { cwd, env }); assert.ok(r.ok, r.stderr); return r.stdout; };
+  try {
+    const origin = path.join(dir, 'origin');
+    fs.mkdirSync(origin);
+    g(origin, 'init', '-q', '-b', 'main');
+    for (const v of ['v1.0.1', 'v1.0.2']) { g(origin, 'commit', '-q', '--allow-empty', '-m', v); g(origin, 'tag', v); }
+    const { PIN_MIN } = await import('../scripts/update.mjs');
+    assert.match(pinClone(origin, 'v0.9.10').reason, new RegExp(`predates workflow_version \\(first in ${PIN_MIN}\\)`));
+    const clone = path.join(dir, 'clone');
+    g(dir, 'clone', '-q', origin, clone);
+    g(clone, 'checkout', '-q', 'v1.0.2');
+    assert.deepEqual(pinClone(clone, '1.0.1'), { status: 'updated', from: 'v1.0.2', to: 'v1.0.1' }, 'older pin');
+    assert.equal(pinClone(clone, 'v1.0.1').status, 'current');
+    g(origin, 'commit', '-q', '--allow-empty', '-m', 'v1.0.3'); g(origin, 'tag', 'v1.0.3');
+    assert.deepEqual(pinClone(clone, 'v1.0.3'), { status: 'updated', from: 'v1.0.1', to: 'v1.0.3' }, 'tag fetched from origin');
+    assert.match(pinClone(clone, 'v1.0.9').reason, /release v1.0.9 does not exist/);
+    assert.match(pinClone(clone, 'latest').reason, /not a release tag/);
+    // SessionStart note: switch announced; a development clone (branch) stays without a note.
+    g(clone, 'checkout', '-q', 'v1.0.1');
+    assert.match(pinWorkflow({ policy: { workflow_version: 'v1.0.3' } }, clone), /workflow switched v1.0.1 -> v1.0.3 per brain policy/);
+    assert.equal(pinWorkflow({ policy: {} }, clone), null);
+    fs.writeFileSync(path.join(clone, 'x'), 'local');
+    assert.match(pinWorkflow({ policy: { workflow_version: 'v1.0.2' } }, clone), /not switched to v1.0.2 .*local changes/);
+    fs.rmSync(path.join(clone, 'x'));
+    g(clone, 'checkout', '-q', 'main');
+    assert.equal(pinWorkflow({ policy: { workflow_version: 'v1.0.2' } }, clone), null);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

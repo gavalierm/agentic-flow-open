@@ -56,10 +56,11 @@ test('P-048: manifest name workflow, defaultEnabled false, no version field', ()
   assert.equal(m.version, undefined);
 });
 
-test('P-049: file and directory names are ascii, lowercase (README/SKILL/PLAN/PRINCIPLES allowed), no spaces', () => {
+test('P-049: file and directory names are ascii, lowercase (README/SKILL/PLAN/PRINCIPLES and principles/P-NNN.md allowed), no spaces', () => {
   const bad = allFiles.map((f) => path.relative(PLUGIN_ROOT, f)).filter((rel) => {
     const base = path.basename(rel);
     if (/^((README|SKILL|PLAN|PRINCIPLES|CLAUDE|SNAPSHOT)\.md|LICENSE)$/.test(base)) return false;
+    if (/^docs\/principles\/P-\d{3}\.md$/.test(rel)) return false;
     return /[^\x00-\x7F]/.test(rel) || /\s/.test(rel) || /[A-Z]/.test(rel.replace(/\/(README|SKILL)\.md$/, ''));
   });
   assert.deepEqual(bad, []);
@@ -82,8 +83,18 @@ test('P-049: frontmatter fields of skills and agents are english lowercase; desc
   }
 });
 
+test('P-056: no skill tells the agent to ask with AskUserQuestion (the hook denies it)', () => {
+  for (const s of fs.readdirSync(path.join(PLUGIN_ROOT, 'skills'))) {
+    const f = path.join(PLUGIN_ROOT, 'skills', s, 'SKILL.md');
+    if (!fs.existsSync(f)) continue;
+    for (const line of fs.readFileSync(f, 'utf8').split('\n')) {
+      if (line.includes('AskUserQuestion')) assert.match(line, /zamietne|wizard start/, `skills/${s}/SKILL.md: ${line.slice(0, 120)}`);
+    }
+  }
+});
+
 test('P-029: every base skill has SKILL.md and a script in bin/', () => {
-  for (const s of ['save', 'error', 'finish', 'consolidate', 'delegate', 'find', 'topic', 'comms', 'check']) {
+  for (const s of ['save', 'error', 'done', 'consolidate', 'delegate', 'find', 'topic', 'comms', 'check', 'project']) {
     assert.ok(fs.existsSync(path.join(PLUGIN_ROOT, 'skills', s, 'SKILL.md')), `skills/${s}/SKILL.md`);
     assert.ok(fs.existsSync(path.join(PLUGIN_ROOT, 'bin', `${s}.mjs`)), `bin/${s}.mjs`);
   }

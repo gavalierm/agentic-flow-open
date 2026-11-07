@@ -73,9 +73,22 @@ export function resolveTargetProject(explicit) {
 
 export function resolveProject(explicit) {
   if (explicit) return path.resolve(explicit);
-  if (process.env.WORKFLOW_PROJECT_DIR) return path.resolve(process.env.WORKFLOW_PROJECT_DIR);
-  if (process.env.CLAUDE_PROJECT_DIR) return path.resolve(process.env.CLAUDE_PROJECT_DIR);
+  if (process.env.WORKFLOW_PROJECT_DIR) return domainRootProject(path.resolve(process.env.WORKFLOW_PROJECT_DIR));
+  if (process.env.CLAUDE_PROJECT_DIR) return domainRootProject(path.resolve(process.env.CLAUDE_PROJECT_DIR));
   return gitToplevel(process.cwd()) || process.cwd();
+}
+
+/**
+ * A session whose project is a domain root (no WORKFLOW_CONFIG, only DOMAIN_MARKER) works in the domain brain's project.
+ * Sessions started before a persona moved into its domain keep the old dir, which became the domain root (alice
+ * 2026-11-04: ~/agentic/alice -> ~/agentic/alice/agent-alice; hook mail "comms unavailable", save "no brain configured").
+ */
+export function domainRootProject(dir) {
+  if (fs.existsSync(path.join(dir, WORKFLOW_CONFIG))) return dir;
+  const cfg = readJson(path.join(dir, DOMAIN_MARKER), null);
+  if (!cfg || typeof cfg.brain !== 'string' || path.isAbsolute(cfg.brain)) return dir;
+  const brain = path.resolve(dir, cfg.brain);
+  return path.dirname(brain) === dir && fs.existsSync(path.join(brain, WORKFLOW_CONFIG)) ? brain : dir;
 }
 
 /** Read .workflow.json and local/workflow.json. Returns { brainRel, brain, source } or null when config is missing. */
@@ -99,7 +112,8 @@ export function resolveBrain(projectDir) {
     return { error: `absolute brain path is not allowed in ${source} (P-024)`, brainRel: cfg.brain, source };
   }
   if (cfg.brain.replace(/\/+$/, '') === PERSONA_BRAIN) return { brainRel: PERSONA_BRAIN, brain: mainCheckout(projectDir), source, persona: true };
-  return { brainRel: cfg.brain, brain: path.resolve(projectDir, cfg.brain), source };
+  // Relative to the main checkout: in a topic worktree (`<domain>/.worktrees/<repo>/<id>`) `../<brain>` means the same brain.
+  return { brainRel: cfg.brain, brain: path.resolve(mainCheckout(projectDir), cfg.brain), source };
 }
 
 /** Ensure <project>/.workflow.json exists with a relative brain path (P-024). Returns { brainInfo, written }. */
@@ -160,9 +174,29 @@ export function inSubagent() {
   return !!(process.env.WORKFLOW_AGENT_ID || process.env.CLAUDE_AGENT_ID);
 }
 
-export function machineName() {
-  return os.hostname();
+/**
+ * Stable machine id (holder.json `machine`, logs/<machine>/, machine exceptions). The hostname at first use is kept in
+ * ~/.config/agentic-flow/machine-id, so a later hostname change does not make this machine a stranger to its own topics.
+ * WORKFLOW_MACHINE_ID overrides; WORKFLOW_MACHINE_FILE moves the file (tests, a second machine simulated on one host).
+ */
+export function machineName(env = process.env) {
+  if (env.WORKFLOW_MACHINE_ID) return safeMachine(env.WORKFLOW_MACHINE_ID);
+  const file = env.WORKFLOW_MACHINE_FILE || path.join(env.HOME || os.homedir(), '.config', 'agentic-flow', 'machine-id');
+  try {
+    const id = fs.readFileSync(file, 'utf8').trim();
+    if (id) return safeMachine(id);
+  } catch { /* first use */ }
+  const id = safeMachine(os.hostname());
+  try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, `${id}\n`); } catch { /* read-only home: hostname each time */ }
+  return id;
 }
+
+/** A holder recorded on this machine (or without a machine, older records). */
+export function sameMachine(name, env = process.env) {
+  return !name || safeMachine(name) === machineName(env);
+}
+
+const safeMachine = (s) => String(s).trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^[.-]+/, '') || 'machine';
 
 /** Thread state file in <brain>/local/threads/<id>.json (P-047 turn source, pending signals). */
 export function threadStateFile(brainDir, id) {
@@ -184,7 +218,60 @@ export function isWakeTurn(brainDir, id) {
   return readThreadState(brainDir, id).turn_source === 'wake';
 }
 
+/**
+ * Domain (v3, D-0002): the folder that bounds where agents write, ~/agentic/<domain>/. Its root holds DOMAIN_MARKER
+ * (`{"brain": "<dir of the domain brain>"}`); the nearest marker above the project (also above a topic worktree inside
+ * the domain) decides. Exceptions outside the domain come only from the domain brain policy
+ * (`domain.allow_outside`: paths, `~/` allowed, and the word "sudo"). Returns null without a marker (not migrated yet).
+ */
+/**
+ * Policy `domain.allow_outside`: the operator's explicit exceptions to the write boundary (D-0002): absolute or `~/`
+ * paths (a filesystem root is ignored) and the word "sudo". Relative paths are ignored: they would depend on the cwd.
+ */
+export function allowOutside(policy, home = os.homedir()) {
+  const allow = Array.isArray(policy?.domain?.allow_outside) ? policy.domain.allow_outside.filter((x) => typeof x === 'string') : [];
+  const paths = allow.filter((x) => x !== 'sudo' && (x.startsWith('~/') || path.isAbsolute(x)))
+    .map((x) => path.resolve(x.startsWith('~/') ? path.join(home, x.slice(2)) : x)).filter((x) => x !== path.parse(x).root);
+  return { paths, sudo: allow.includes('sudo') };
+}
+
+export const DOMAIN_MARKER = '.agentic-domain';
+/** Code topic worktrees of a domain: `<domain>/.worktrees/<repo>/<topic>/` (hidden: every visible folder is a repo). */
+export const WORKTREES_DIR = '.worktrees';
+/** Installed releases the running services use (v3, D-0003): `~/services/<repo>/`; WORKFLOW_SERVICES_DIR for tests. */
+export function servicesDir(env = process.env) {
+  return env.WORKFLOW_SERVICES_DIR || path.join(env.HOME || os.homedir(), 'services');
+}
+export function resolveDomain(projectDir, home = os.homedir()) {
+  for (let p = path.resolve(projectDir); ; p = path.dirname(p)) {
+    const file = path.join(p, DOMAIN_MARKER);
+    if (fs.existsSync(file)) {
+      const cfg = readJson(file, {}) || {};
+      const brain = typeof cfg.brain === 'string' && !path.isAbsolute(cfg.brain) ? path.resolve(p, cfg.brain) : null;
+      const policy = brain ? readJson(path.join(brain, 'policy.json'), {}) || {} : {};
+      const allow = allowOutside(policy, home);
+      return { root: p, marker: file, brain, allowOutside: allow.paths, sudo: allow.sudo };
+    }
+    if (p === path.dirname(p)) return null;
+  }
+}
+
 /** Full context for scripts: project, brain, policy, thread. */
+/**
+ * A brain command run from inside another workflow project with its own brain writes to the session's brain, because
+ * the exported WORKFLOW_PROJECT_DIR wins over cwd (alice 2026-11-04: save from a client project wrote into the persona's
+ * brain). Returns the reason to refuse, or null. An explicit --project decides; a dir whose brain is the same passes.
+ */
+export function foreignProjectCwd(ctx, explicit) {
+  if (explicit || !ctx.brainDir) return null;
+  const top = gitToplevel(process.cwd());
+  if (!top || path.resolve(top) === path.resolve(ctx.projectDir)) return null;
+  const info = resolveBrain(top);
+  const other = info && !info.error ? info.brain : null;
+  if (!other || !brainExists(other) || path.resolve(other) === path.resolve(ctx.brainDir)) return null;
+  return `cwd is in project ${path.basename(top)} with its own brain, but the session project is ${ctx.projectName}: this would write into the brain of ${ctx.projectName}. Pass --project ${top} to write into ${path.basename(top)}, or --project ${ctx.projectDir} (or run from the session dir) to write into ${ctx.projectName}`;
+}
+
 export function loadContext({ project, requireBrain = true } = {}) {
   const projectDir = resolveProject(project);
   const brainInfo = resolveBrain(projectDir);
@@ -206,6 +293,7 @@ export function loadContext({ project, requireBrain = true } = {}) {
     policy: loadPolicy(ok ? brainDir : null),
     thread: threadId(),
     pluginRoot: PLUGIN_ROOT,
+    domain: resolveDomain(projectDir),
   };
 }
 

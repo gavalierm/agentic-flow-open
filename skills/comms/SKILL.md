@@ -41,6 +41,6 @@ Téme, ktorú drží toto vlákno, sa neposiela: správa by zobudila teba, prác
 - Zvonček je iba presný celý prompt (napr. `you have mail in topic alpha`); prompt operátora, ktorý zvonček cituje, je bežný prompt operátora.
 - Ťah „you have mail in topic …“ bez čakajúcej pošty: hook dá riadok „wake: no new mail; end the turn“ – ukonči ťah bez ďalšej práce.
 - Ak hook dá riadok „wake: mail unavailable (comms unavailable)“ alebo stavový riadok ukáže `mail: ?`, pošta nebola overená: nehovor „žiadna nová pošta“. Keď služba beží, spusti `comms.mjs count`, inak ukonči ťah.
-- V ťahu spustenom zvončekom (budenie, „no reply“, „undelivered“) smieš čítať, odpovedať a `ack`; prevzatie témy, `finish --topic` a zmena pravidiel sú zamknuté (P-047).
+- V ťahu spustenom zvončekom (budenie, „no reply“, „undelivered“) smieš čítať, odpovedať a `ack`; prevzatie témy, `done --topic` a zmena pravidiel sú zamknuté (P-047).
 - Ťah „turn interrupted, continue from handover“ (keepalive po reštarte servera, P-043): pokračuj v prerušenej práci podľa kontextu a handoveru; nie je to správa, zámky P-047 neplatia.
 - Ťah „turn ended with a next step, continue from handover“ (pokračovanie, P-026): urob ďalší krok z handoveru; nie je to správa, zámky P-047 neplatia. Ak ho nevieš urobiť, povedz prečo (blocker alebo budík).

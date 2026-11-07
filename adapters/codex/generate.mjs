@@ -100,7 +100,7 @@ export function agentsBlock(rulesText, brainRel) {
     '',
     `- Hook SessionStart doplní stavový riadok \`thread <id> | topic <id> (<state>) | mail: <n>\`, indexy pamäte a rozhodnutí, otvorené témy a verziu \`workflow <sha>\`. Ak hlási \`AGENTS.md stale\`, spusti adaptér znova (mimo bežiacej session).`,
     `- Skilly workflow a skilly brain sú lokálne kópie v \`${skillsDir}\` (generované pri každom štarte; neupravuj ich tam). Skripty volaj presne tak, ako ich uvádza SKILL.md skillu.`,
-    brainRel ? `- Brain je \`${brainRel}\`. Zápis doň ide iba cez skilly \`save\`, \`topic\`, \`finish\`; priamy zápis je zakázaný (P-013, P-040).` : '- Projekt nemá vlastný brain (P-024): témy, pamäť a handover sú v brain persony, ktorá ho spravuje.',
+    brainRel ? `- Brain je \`${brainRel}\`. Zápis doň ide iba cez skilly \`save\`, \`topic\`, \`done\`; priamy zápis je zakázaný (P-013, P-040).` : '- Projekt nemá vlastný brain (P-024): témy, pamäť a handover sú v brain persony, ktorá ho spravuje.',
     '- Identita vlákna je `WORKFLOW_THREAD_ID` (v T3 `T3CODE_THREAD_ID`); bez stabilného ID vlákno tému nezaberie (P-038).',
     '- Správa `assist` alebo `blocker` má lehotu (TTL); keď uplynie bez odpovede, budenie ťa zobudí (P-042): povýš ju na `blocker`, zruš, alebo sa spýtaj operátora (skill `comms`).',
     '- Potvrdenie nebezpečného kroku (P-018) Codex nevie vyžiadať: hook taký krok odmietne; cieľ najprv commitni (aby bol obnoviteľný z gitu), alebo krok vykoná operátor.',

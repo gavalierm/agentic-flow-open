@@ -123,9 +123,9 @@ test('send needs a level (a reply excepted); info is refused with the valid leve
     assert.match(toPersona.stdout, /sent \S+ \(assist\) -> @bob\/main$/m);
     assert.doesNotMatch(toPersona.stdout, /held/);
 
-    // assist to a working topic waits; finish (free point) lists it by id and category, release clears the holder.
+    // assist to a working topic waits; done (free point) lists it by id and category, release clears the holder.
     assert.equal(comms.cli(['send', '--project', 'project', '--topic', 'alpha', '--level', 'assist', '--text', 'later'], 'bob').code, 0);
-    const fin = fx.run('finish.mjs', ['--verified', 'seen it']);
+    const fin = fx.run('done.mjs', ['--verified', 'seen it']);
     assert.equal(fin.status, 0, fin.out);
     assert.match(fin.stdout, /topic alpha is free/);
     assert.match(fin.stdout, /mail: 1 waiting for topic alpha \(free point\): \S+ assist/);

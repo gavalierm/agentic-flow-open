@@ -120,3 +120,93 @@ test('several threads on one brain clone create and claim topics at once: every 
     assert.ok(!fs.existsSync(path.join(fx.brain, '.git', 'workflow-write.lock')));
   } finally { fx.cleanup(); }
 });
+
+// Several PCs on one brain (alice/main 2026-11-05): a lost claim race ran `git reset --hard origin/<branch>` and threw
+// away uncommitted changes and unpushed commits of the losing clone.
+test('lost claim race drops only the claim commit: uncommitted changes of the clone survive', () => {
+  const fx = setup({ second: true });
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'race', '--subject', 'Race', '--no-claim']).status, 0);
+    fx.git(fx.brainB, 'pull', '-q', '--rebase', 'origin', 'main');
+    // After A's claim commit (before its push), B claims first: A's push then loses the race.
+    const marker = path.join(fx.root, 'raced');
+    const hook = path.join(fx.brain, '.githooks', 'post-commit');
+    fs.writeFileSync(hook, `#!/bin/sh\n[ -e "${marker}" ] && exit 0\ntouch "${marker}"\ncd "${fx.brainB}" && printf '{"thread":"b2","mode":"operator"}\\n' > topics/race/holder.json && git commit -q --no-verify -am "b claims race" && git push -q origin HEAD:main\n`);
+    fs.chmodSync(hook, 0o755);
+    fs.appendFileSync(path.join(fx.brain, '.gitattributes'), '# local edit, not committed\n');
+    const r = fx.run('topic.mjs', ['claim', 'race']);
+    assert.notEqual(r.status, 0, r.out);
+    assert.match(r.out, /held by thread b2 \(claimed first\)/);
+    assert.match(fx.read('.gitattributes'), /# local edit, not committed/);
+    assert.doesNotMatch(fx.git(fx.brain, 'log', '--format=%s', '-3'), /topic claim race by a1/);
+  } finally { fx.cleanup(); }
+});
+
+test('claim is refused while the clone has commits it cannot push; the commits stay', () => {
+  const fx = setup();
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'off', '--subject', 'Off', '--no-claim']).status, 0);
+    fx.git(fx.brain, 'remote', 'set-url', 'origin', path.join(fx.root, 'missing.git'));
+    assert.equal(fx.run('save.mjs', ['memory', 'tool', 'offline', '--content', 'x']).status, 0);
+    const head = fx.git(fx.brain, 'rev-parse', 'HEAD');
+    const r = fx.run('topic.mjs', ['claim', 'off']);
+    assert.notEqual(r.status, 0, r.out);
+    assert.match(r.out, /unpushed commit\(s\) that could not be pushed .*not claimed/);
+    assert.equal(fx.git(fx.brain, 'rev-parse', 'HEAD'), head);
+    assert.equal(JSON.parse(fx.read('topics/off/holder.json')).thread, undefined);
+  } finally { fx.cleanup(); }
+});
+
+test('one thread id on two machines is two holders: the other machine is refused and offered a takeover only when idle', () => {
+  const fx = setup({ second: true });
+  try {
+    const A = { WORKFLOW_MACHINE_ID: 'pc-a' };
+    const sameIdOnB = { ...fx.envB, WORKFLOW_THREAD_ID: 'a1', WORKFLOW_MACHINE_ID: 'pc-b' };
+    assert.equal(fx.run('topic.mjs', ['create', 'mx', '--subject', 'Machines'], { env: A }).status, 0);
+    let r = fx.runB('topic.mjs', ['claim', 'mx'], { env: sameIdOnB });
+    assert.equal(r.status, 1, r.out); assert.match(r.out, /held by thread a1 on pc-a/); assert.match(r.out, /not an instruction to take it over/);
+    r = fx.runB('save.mjs', ['handover', 'mx', '--task', 'x', '--next', 'y'], { env: sameIdOnB });
+    assert.equal(r.status, 1, r.out); assert.match(r.out, /on machine pc-a, not on this machine \(pc-b\)/);
+    r = fx.runB('topic.mjs', ['status'], { env: sameIdOnB });
+    assert.match(r.out, /holds no topic/);
+    // Idle over the policy limit on another machine: the refusal offers the takeover after one operator yes.
+    fs.writeFileSync(path.join(fx.brainB, 'policy.json'), JSON.stringify({ topics: { stale_machine_hours: 0 } }));
+    fs.appendFileSync(path.join(fx.brainB, '.git', 'info', 'exclude'), 'policy.json\n');
+    r = fx.runB('topic.mjs', ['claim', 'mx'], { env: { ...fx.envB, WORKFLOW_MACHINE_ID: 'pc-b' } });
+    assert.equal(r.status, 1, r.out); assert.match(r.out, /no activity for 0h on another machine/); assert.match(r.out, /claim mx --force --operator-approved/);
+    r = fx.runB('topic.mjs', ['claim', 'mx', '--force', '--operator-approved'], { env: { ...fx.envB, WORKFLOW_MACHINE_ID: 'pc-b' } });
+    assert.equal(r.status, 0, r.out); assert.match(r.out, /took over from a1 on pc-a/);
+  } finally { fx.cleanup(); }
+});
+
+test('handoff to another machine: handover, release and push; the other machine claims without --force', () => {
+  const fx = setup({ second: true });
+  try {
+    const A = { WORKFLOW_MACHINE_ID: 'pc-a' };
+    const B = { ...fx.envB, WORKFLOW_MACHINE_ID: 'pc-b' };
+    assert.equal(fx.run('topic.mjs', ['create', 'ho', '--subject', 'Handoff'], { env: A }).status, 0);
+    let r = fx.runB('topic.mjs', ['handoff', 'ho'], { env: B });
+    assert.equal(r.status, 1); assert.match(r.out, /only its holder on this machine hands it off/);
+    r = fx.run('topic.mjs', ['handoff', 'ho'], { env: A });
+    assert.equal(r.status, 1); assert.match(r.out, /has no handover: give --task, --done and --next/);
+    // A message waiting in this machine's outbox (mail down) would stay behind: refused unless --leave-outbox.
+    fs.writeFileSync(path.join(fx.brain, 'local', 'outbox', 'm1.json'), '{}\n');
+    r = fx.run('topic.mjs', ['handoff', 'ho', '--task', 'T', '--done', 'd1', '--next', 'continue on pc-b'], { env: A });
+    assert.equal(r.status, 1); assert.match(r.out, /1 message\(s\) in this machine's mail outbox could not be sent/);
+    fs.writeFileSync(path.join(fx.brain, 'local', 'log-buffer', 's9.jsonl'), `${JSON.stringify({ kind: 'fail', agent: 'main', cmd: 'x', error: 'boom', at: new Date().toISOString() })}\n`);
+    r = fx.run('topic.mjs', ['handoff', 'ho', '--task', 'T', '--done', 'd1', '--next', 'continue on pc-b', '--leave-outbox'], { env: A });
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.out, /logs of session s9 flushed/); assert.match(r.out, /1 message\(s\) left in this machine's outbox/);
+    assert.match(r.out, /handed off, pushed: on the other machine run topic.mjs claim ho/);
+    const holder = JSON.parse(fx.git(fx.origin, 'show', 'main:topics/ho/holder.json'));
+    assert.equal(holder.thread, undefined); assert.equal(holder.handoff_from.machine, 'pc-a');
+    assert.match(fx.git(fx.origin, 'show', 'main:topics/ho/handover.md'), /continue on pc-b/);
+    assert.ok(fx.git(fx.origin, 'ls-tree', '-r', '--name-only', 'main', 'logs/pc-a').includes('.log'));
+    r = fx.runB('topic.mjs', ['claim', 'ho'], { env: B });
+    assert.equal(r.status, 0, r.out);
+    const now = JSON.parse(fx.git(fx.origin, 'show', 'main:topics/ho/holder.json'));
+    assert.equal(now.thread, 'b2'); assert.equal(now.machine, 'pc-b');
+    r = fx.runB('save.mjs', ['handover', 'ho', '--task', 'T', '--next', 'n'], { env: B });
+    assert.equal(r.status, 0, r.out);
+  } finally { fx.cleanup(); }
+});

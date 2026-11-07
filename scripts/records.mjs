@@ -83,8 +83,36 @@ export function readTopics(brainDir, { archived = false } = {}) {
   return out.sort((a, b) => a.id.localeCompare(b.id));
 }
 
-export function allRecords(brainDir) {
-  return [...readMemory(brainDir), ...readDecisions(brainDir), ...readRules(brainDir), ...readSkills(brainDir)];
+export function allRecords(brainDir, domain = null) {
+  return [...readMemory(brainDir), ...readDecisions(brainDir), ...readRules(brainDir), ...readSkills(brainDir), ...projectRecords(domain, brainDir)];
+}
+
+/** Project knowledge folder in a repo (v3, D-0002): travels with the repo, never deployed. */
+export const PROJECT_KNOWLEDGE = 'agentic';
+
+/**
+ * Knowledge kept in the repos of a domain (`<repo>/agentic/`: HANDOVER.md, decisions/, runbooks/, memory/, skills/),
+ * so whoever takes the repo over gets it with the code (operator 2026-11-04). Paths are relative to the brain.
+ */
+export function projectRecords(domain, brainDir) {
+  if (!domain?.root || !fs.existsSync(domain.root)) return [];
+  const out = [];
+  for (const entry of fs.readdirSync(domain.root, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+    const dir = path.join(domain.root, entry.name, PROJECT_KNOWLEDGE);
+    if (!fs.existsSync(dir) || (brainDir && path.resolve(domain.root, entry.name) === path.resolve(brainDir))) continue;
+    const kindOf = { memory: 'memory', decisions: 'decision', runbooks: 'runbook', skills: 'skill' };
+    for (const f of listFiles(dir, (x) => x.endsWith('.md'))) {
+      const sub = path.relative(dir, f).split(path.sep)[0];
+      const kind = f === path.join(dir, 'HANDOVER.md') ? 'handover' : kindOf[sub] || 'project';
+      const r = record(brainDir || domain.root, f, kind);
+      r.repo = entry.name;
+      if (kind === 'skill') r.key = String(r.data.name || path.basename(path.dirname(f)));
+      if (kind === 'handover') { r.key = `${entry.name}-handover`; r.aliases.push(`${entry.name} handover`); }
+      out.push(r);
+    }
+  }
+  return out;
 }
 
 export function nextDecisionId(brainDir) {

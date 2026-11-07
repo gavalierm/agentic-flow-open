@@ -1,11 +1,91 @@
 // Observation logs (P-030, P-028, P-005, P-006): per-turn buffer in <brain>/local/log-buffer/, one brain write per turn.
+// Several machines on one brain (P-040): each machine only appends to its own logs/<machine>/<date>.log, so a sync never
+// meets a log conflict (a flush that rewrote the shared logs/*.log lost lines of the other machine). A line is
+// `<log> <entry>`; a removal is an appended `drop <log> <name|failure line>`. The combined view (old shared files
+// first, then the day files in date order) is built on read and kept in <brain>/local/logs/<log>.log.
 import fs from 'node:fs';
 import path from 'node:path';
 import { readText, today, nowIso, listFiles, PLUGIN_ROOT } from './util.mjs';
 import { brainWrite } from './brain.mjs';
 import { rejectedProposal } from './find.mjs';
+import { machineName } from './config.mjs';
 
 export const LOG_FILES = ['sequences.log', 'failures.log', 'procedures.log', 'derivations.log'];
+const DAY_FILE = /^(\d{4}-\d{2}-\d{2})\.log$/;
+const kindOf = (logName) => String(logName).replace(/\.log$/, '');
+
+/** This machine's day file (brain-relative). */
+export function machineLogPath(date = today(), machine = machineName()) {
+  return `logs/${machine}/${date}.log`;
+}
+
+/** Day files of every machine, in date order (machine name breaks ties). */
+function dayFiles(brainDir) {
+  const root = path.join(brainDir, 'logs');
+  const out = [];
+  let dirs = [];
+  try { dirs = fs.readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name); } catch { return out; }
+  for (const machine of dirs) {
+    let files = [];
+    try { files = fs.readdirSync(path.join(root, machine)); } catch { continue; }
+    for (const f of files) { const m = DAY_FILE.exec(f); if (m) out.push({ machine, date: m[1], file: path.join(root, machine, f), rel: `logs/${machine}/${f}` }); }
+  }
+  return out.sort((a, b) => a.date.localeCompare(b.date) || a.machine.localeCompare(b.machine));
+}
+
+/**
+ * A drop is applied after all lines are read: the order of two machines' files of one day is unknown. A failure is
+ * removed by its whole line (unique: time and session). A name (procedures, derivations, sequences, field 2) is removed
+ * from the old shared file, from earlier lines of the dropping machine and from other machines' days before the drop;
+ * a later repeat counts again.
+ */
+export function readLog(brainDir, logName, { rotationDays = null } = {}) {
+  const kind = kindOf(logName);
+  const entries = readText(path.join(brainDir, 'logs', logName), '').split('\n').filter(Boolean).map((text) => ({ text, machine: null }));
+  const drops = [];
+  let seq = 0;
+  for (const d of dayFiles(brainDir)) {
+    for (const raw of readText(d.file, '').split('\n')) {
+      const sp = raw.indexOf(' ');
+      if (sp < 0) continue;
+      const head = raw.slice(0, sp);
+      const rest = raw.slice(sp + 1);
+      seq += 1;
+      if (head === kind) entries.push({ text: rest, machine: d.machine, date: d.date, seq });
+      else if (head === 'drop' && rest.startsWith(`${kind} `)) drops.push({ what: rest.slice(kind.length + 1), machine: d.machine, date: d.date, seq });
+    }
+  }
+  const gone = (e) => (kind === 'failures'
+    ? drops.some((x) => x.what === e.text)
+    : drops.some((x) => x.what === e.text.split(' ')[1] && (!e.machine || (e.machine === x.machine ? e.seq < x.seq : e.date < x.date))));
+  let lines = (drops.length ? entries.filter((e) => !gone(e)) : entries).map((e) => e.text);
+  if (rotationDays) lines = rotateLines(lines, rotationDays);
+  try {
+    const view = path.join(brainDir, 'local', 'logs', logName);
+    fs.mkdirSync(path.dirname(view), { recursive: true });
+    fs.writeFileSync(view, lines.length ? lines.join('\n') + '\n' : '');
+  } catch { /* the view is a convenience */ }
+  return lines;
+}
+
+/** Append op for this machine's day file (entries of one log). */
+export function appendOp(logName, entries, { date = today() } = {}) {
+  const kind = kindOf(logName);
+  return { path: machineLogPath(date), append: entries.map((e) => `${kind} ${e}\n`).join('') };
+}
+
+/** Removal by appending: names (procedures, derivations, sequences) or whole failure lines. */
+export function dropOp(logName, whats) {
+  const kind = kindOf(logName);
+  return { path: machineLogPath(), append: whats.map((w) => `drop ${kind} ${w}\n`).join('') };
+}
+
+/** Rotation: this machine removes only its own day files past the window (other machines rotate theirs). */
+export function rotationOps(brainDir, days, machine = machineName()) {
+  if (!days) return [];
+  const cutoff = Date.now() - days * 864e5;
+  return dayFiles(brainDir).filter((d) => d.machine === machine && Date.parse(d.date) < cutoff).map((d) => ({ path: d.rel, remove: true }));
+}
 
 export function bufferFile(brainDir, sessionId) {
   return path.join(brainDir, 'local', 'log-buffer', `${sessionId || 'unknown'}.jsonl`);
@@ -117,10 +197,10 @@ export function flushBuffer(ctx, sessionId) {
   const entries = readBuffer(brainDir, sessionId);
   const signals = [];
   if (!entries.length) return { written: false, signals };
-  const logsDir = path.join(brainDir, 'logs');
-  const seqLines = rotateLines(readText(path.join(logsDir, 'sequences.log'), '').split('\n').filter(Boolean), policy.logs.rotation_days);
-  const failLines = readText(path.join(logsDir, 'failures.log'), '').split('\n').filter(Boolean);
+  const seqLines = readLog(brainDir, 'sequences.log', { rotationDays: policy.logs.rotation_days });
+  const failLines = readLog(brainDir, 'failures.log');
   const before = countByField(seqLines);
+  const newFails = [];
 
   // Sequences: consecutive successful shell commands per agent; a failure breaks the run.
   const runs = new Map();
@@ -138,12 +218,14 @@ export function flushBuffer(ctx, sessionId) {
       runs.set(agent, run);
     } else if (e.kind === 'fail') {
       push(agent);
-      failLines.push(`${e.t} ${agent} ${sessionId} ${(e.command || e.tool || '?').replace(/\s+/g, ' ').slice(0, 120)} :: ${(e.error || '').split('\n')[0].slice(0, 160)}`);
+      newFails.push(`${e.t} ${agent} ${sessionId} ${(e.command || e.tool || '?').replace(/\s+/g, ' ').slice(0, 120)} :: ${(e.error || '').split('\n')[0].slice(0, 160)}`);
     }
   }
   for (const agent of runs.keys()) push(agent);
   const date = today();
-  for (const s of newSeqs) seqLines.push(`${date} ${s} ${sessionId}`);
+  const seqEntries = newSeqs.map((q) => `${date} ${q} ${sessionId}`);
+  seqLines.push(...seqEntries);
+  failLines.push(...newFails);
   const after = countByField(seqLines);
   const threshold = policy.thresholds.sequence_repeats;
   for (const s of new Set(newSeqs)) {
@@ -157,11 +239,9 @@ export function flushBuffer(ctx, sessionId) {
   });
   if (oldFailures.length) signals.push(`failures.log: ${oldFailures.length} unprocessed failure(s) older than ${policy.logs.failure_signal_days} days; run error skill (P-030)`);
 
-  const ops = [
-    { path: 'logs/sequences.log', content: seqLines.length ? seqLines.join('\n') + '\n' : '' },
-    { path: 'logs/failures.log', content: failLines.length ? failLines.join('\n') + '\n' : '' },
-  ];
-  const res = brainWrite(ctx, { ops, internal: true, message: `logs flush ${sessionId}` });
+  const ops = [appendOp('sequences.log', seqEntries), appendOp('failures.log', newFails)].filter((o) => o.append);
+  ops.push(...rotationOps(brainDir, policy.logs.rotation_days));
+  const res = ops.length ? brainWrite(ctx, { ops, internal: true, message: `logs flush ${sessionId}` }) : { committed: false, unpushed: 0 };
   fs.rmSync(bufferFile(brainDir, sessionId), { force: true });
   return { written: res.committed, signals, unpushed: res.unpushed, sequences: newSeqs.length, failures: entries.filter((e) => e.kind === 'fail').length };
 }
@@ -169,27 +249,32 @@ export function flushBuffer(ctx, sessionId) {
 /** procedures.log / derivations.log (P-005, P-006): append names, rotate, report repeats. */
 export function recordNames(ctx, logName, names, { thread }) {
   const { brainDir, policy } = ctx;
-  const file = path.join(brainDir, 'logs', logName);
-  let lines = rotateLines(readText(file, '').split('\n').filter(Boolean), policy.logs.rotation_days);
+  const lines = readLog(brainDir, logName, { rotationDays: policy.logs.rotation_days });
   const date = today();
-  for (const n of names) lines.push(`${date} ${n} ${thread || '-'}`);
+  const entries = names.map((n) => `${date} ${n} ${thread || '-'}`);
+  lines.push(...entries);
   const counts = countByField(lines);
-  return { op: { path: `logs/${logName}`, content: lines.length ? lines.join('\n') + '\n' : '' }, counts, lines };
+  return { op: appendOp(logName, entries), counts, lines };
 }
 
 export function existingNames(brainDir, logName) {
-  const lines = readText(path.join(brainDir, 'logs', logName), '').split('\n').filter(Boolean);
+  const lines = readLog(brainDir, logName);
   return [...countByField(lines).entries()].map(([name, n]) => ({ name, count: n }));
 }
 
 export function removeNames(brainDir, logName, names) {
-  const lines = readText(path.join(brainDir, 'logs', logName), '').split('\n').filter(Boolean);
-  const keep = lines.filter((l) => !names.includes(l.split(' ')[1]));
-  return { path: `logs/${logName}`, content: keep.length ? keep.join('\n') + '\n' : '' };
+  return dropOp(logName, names);
 }
 
 export function listFailures(brainDir) {
-  return readText(path.join(brainDir, 'logs', 'failures.log'), '').split('\n').filter(Boolean);
+  return readLog(brainDir, 'failures.log');
+}
+
+/** Failure n (1-based, as listed) processed: appended drop of its line. Throws when there is no such line. */
+export function resolveFailureOp(brainDir, n) {
+  const lines = listFailures(brainDir);
+  if (!n || !lines[n - 1]) throw new Error(`no failure line ${n}`);
+  return { op: dropOp('failures.log', [lines[n - 1]]), remaining: lines.length - 1 };
 }
 
 export function pendingBuffers(brainDir) {

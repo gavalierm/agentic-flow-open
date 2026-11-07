@@ -13,6 +13,7 @@ const reason = (r) => r.json.hookSpecificOutput?.permissionDecisionReason || '';
 
 function owned() {
   const fx = setup();
+  fs.writeFileSync(path.join(fx.root, '.agentic-domain'), '{"brain":"brain"}'); // the owned repo is in the same domain (v3, D-0002)
   const repo = path.join(fx.root, 'owned');
   fs.mkdirSync(repo);
   fx.git(repo, 'init', '-q', '-b', 'dev');

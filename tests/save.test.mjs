@@ -143,6 +143,23 @@ test('skill --script: the script is stored next to SKILL.md in one brain commit;
   } finally { fx.cleanup(); }
 });
 
+test('skill --remove: a superseded skill is removed with its scripts in one commit; needs a reason', () => {
+  const fx = setup();
+  try {
+    const src = path.join(fx.root, 'check.mjs');
+    fs.writeFileSync(src, 'console.log(1);\n');
+    assert.equal(fx.run('save.mjs', ['skill', 'verify-x', '--description', 'Použi, keď overuješ', '--content', 'krok', '--origin', 'error', '--script', src]).status, 0);
+    let r = fx.run('save.mjs', ['skill', 'verify-x', '--remove']);
+    assert.equal(r.status, 1); assert.match(r.stderr, /--reason/);
+    r = fx.run('save.mjs', ['skill', 'nope-x', '--remove', '--reason', 'x']);
+    assert.equal(r.status, 1); assert.match(r.stderr, /does not exist/);
+    r = fx.run('save.mjs', ['skill', 'verify-x', '--remove', '--reason', 'superseded by workflow:verify']);
+    assert.equal(r.status, 0, r.out);
+    assert.ok(!fx.exists('skills/agentic/verify-x/SKILL.md') && !fx.exists('skills/agentic/verify-x/check.mjs'), 'the skill files are gone');
+    assert.ok(!fx.exists('skills/agentic/verify-x'), 'the emptied skill dir is gone too (the brain hook denies rmdir)');
+  } finally { fx.cleanup(); }
+});
+
 test('skill --replace: the body is replaced by the corrected steps; without it the content is appended', () => {
   const fx = setup();
   try {
@@ -233,5 +250,19 @@ test('new rule gate (operator 2026-11-03): an overlap is extended in the existin
     // Without a judge the word-stem similarity still finds the rule on the same subject.
     r = save('alarm-wait', 'Čakať na odpoveď bez budíka NESMIEŠ, ani na správu.', { WORKFLOW_RULE_JUDGE: 'off' });
     assert.equal(r.status, 1); assert.match(r.stderr, /overlaps waiting \(shared terms: .*\[lexical\]/);
+  } finally { fx.cleanup(); }
+});
+
+test('save from inside another workflow project refuses: the session project would get the write (alice 2026-11-04)', () => {
+  const fx = setup({ second: true });
+  try {
+    const env = { WORKFLOW_PROJECT_DIR: fx.project };
+    let r = fx.run('save.mjs', ['memory', 'tool', 'xy', '--content', 'y'], { cwd: fx.projectB, env });
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /cwd is in project .* with its own brain.*--project/s);
+    r = fx.run('save.mjs', ['memory', 'tool', 'xy', '--content', 'y', '--project', fx.project], { cwd: fx.projectB, env });
+    assert.equal(r.status, 0, r.stderr);
+    r = fx.run('topic.mjs', ['list'], { cwd: fx.projectB, env });
+    assert.equal(r.status, 1, 'topic refuses too');
   } finally { fx.cleanup(); }
 });

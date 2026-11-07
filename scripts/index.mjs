@@ -6,7 +6,8 @@ import { readMemory, readDecisions, readRules, readSkills, readTopics } from './
 export function topicLine(t) {
   const holder = t.holder?.thread || '-';
   const next = t.next ? `, next: ${t.next}` : '';
-  return `${t.id} (${t.state || 'working'}, ${holder}${next})`;
+  const state = t.state === 'paused' && t.paused_until ? `paused until ${t.paused_until.slice(0, 16)}Z` : t.state || 'working';
+  return `${t.id} (${state}, ${holder}${next})`;
 }
 
 export function buildIndexes(brainDir, policy) {

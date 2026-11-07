@@ -93,7 +93,7 @@ test('generated config.toml, hooks.json, AGENTS.md and .agents/skills match poli
 
     // .agents/skills: workflow skills with the plugin path substituted + brain skills, no symlinks
     const skillsDir = path.join(fx.project, '.agents', 'skills');
-    for (const s of ['save', 'topic', 'finish', 'comms', 'delegate', 'x-api']) {
+    for (const s of ['save', 'topic', 'done', 'comms', 'delegate', 'x-api']) {
       assert.ok(fs.existsSync(path.join(skillsDir, s, 'SKILL.md')), s);
       assert.ok(!fs.lstatSync(path.join(skillsDir, s)).isSymbolicLink());
     }

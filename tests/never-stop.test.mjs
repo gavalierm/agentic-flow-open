@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { setup } from './helpers.mjs';
-import { waitingClaim, operatorQuestion, parseDelay, wakerFromTool, validWaker, setTimer, activeTimer } from '../scripts/waker.mjs';
+import { waitingClaim, operatorQuestion, parseDelay, wakerFromTool, validWaker, recordWaker, setTimer, activeTimer } from '../scripts/waker.mjs';
 import { updateNotice } from '../scripts/update-notice.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
 
@@ -36,17 +36,30 @@ test('operatorQuestion, parseDelay, wakerFromTool', () => {
   assert.ok(validWaker({ ...st, timer: { at: '2026-11-03T10:30:00Z' } }, now));
 });
 
-test('Stop: "čakám" without a waker is blocked with the timer command; ending anyway arms the timer; a timer lets it pass', () => {
+test('waker: a harness schedule stays a waker in later turns until removed; a one-shot cron until it fires', () => {
+  const fx = setup();
+  try {
+    const now = Date.parse('2026-11-03T08:00:00Z');
+    const w = wakerFromTool({ tool_name: 'mcp__t3-code__schedule_task', tool_input: { prompt: 'p', schedule: { type: 'fixed_time', timeOfDay: '06:00' } }, tool_response: '{"scheduledTaskId":"st1","nextRunAt":"2026-11-04T05:00:00Z"}' }, now);
+    assert.deepEqual([w.recurring, w.id], [true, 'st1']);
+    assert.equal(wakerFromTool({ tool_name: 'mcp__t3-code__schedule_task', tool_input: { prompt: 'p', bindToCurrentThread: false } }, now), null, 'a run in a new thread wakes nobody here');
+    recordWaker(fx.brain, fx.thread, w);
+    const evening = Date.parse('2026-11-03T20:00:00Z');
+    assert.ok(validWaker({ ...stateOf(fx), turn_started_at: '2026-11-03T19:00:00Z' }, evening), 'the daily task counts 12 h later');
+    recordWaker(fx.brain, fx.thread, wakerFromTool({ tool_name: 'mcp__t3-code__delete_scheduled_task', tool_input: { scheduledTaskId: 'st1' } }, evening));
+    assert.equal(validWaker({ ...stateOf(fx), turn_started_at: '2026-11-03T20:30:00Z' }, evening), null, 'a deleted task is no waker');
+    const c = wakerFromTool({ tool_name: 'CronCreate', tool_input: { cron: '23 6 4 11 *', recurring: false }, tool_response: { id: 'c1', nextFireAt: Date.parse('2026-11-04T06:23:00Z') } }, evening);
+    assert.equal(c.until, '2026-11-04T06:38:00.000Z', 'a one-shot cron holds until it fires');
+  } finally { fx.cleanup(); }
+});
+
+test('Stop: "čakám" without a waker never blocks; code arms the timer silently; a timer lets it pass', () => {
   const fx = setup();
   try {
     fx.hook('user-prompt-submit.mjs', { prompt: 'oprav to' });
     const msg = 'Poslal som otázku Carol, čakám na odpoveď.';
-    const first = fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: msg }).json;
-    assert.equal(first.decision, 'block');
-    assert.match(first.reason, /says it waits \("čakám na odpoveď\./);
-    assert.match(first.reason, /bin\/timer\.mjs --in <minutes>m --then/);
-    assert.match(first.reason, /without a timer is forbidden/);
-    assert.equal(fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: msg }).json.decision, undefined);
+    // No block: a block made the agent end with a timer note, the only message the operator sees (P-060).
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: msg }).json.decision, undefined);
     const st = stateOf(fx);
     assert.ok(activeTimer(st), 'the Stop hook armed the timer itself');
     assert.equal(st.timer.auto, true);
@@ -56,11 +69,12 @@ test('Stop: "čakám" without a waker is blocked with the timer command; ending 
     assert.equal(stateOf(fx).timer, undefined, 'an operator prompt clears the timer');
     setTimer(fx.brain, fx.thread, { delayMs: 30 * 60_000, then: 'check the reply' });
     assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: msg }).json.decision, undefined);
-    // A bell turn is held to it too: a message never stops the work.
+    // A bell turn is held to it too: a message never stops the work, the timer rings it again.
     fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
     const f = path.join(fx.brain, 'local', 'threads', `${fx.thread}.json`);
     fs.writeFileSync(f, JSON.stringify({ ...stateOf(fx), turn_source: 'wake' }));
-    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Steer prijatý, práca zastavená. Čakám na pokyn.' }).json.decision, 'block');
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Steer prijatý, práca zastavená. Čakám na pokyn.' }).json.decision, undefined);
+    assert.ok(activeTimer(stateOf(fx)), 'the bell turn got a timer too');
   } finally { fx.cleanup(); }
 });
 
@@ -91,6 +105,27 @@ test('PreToolUse: AskUserQuestion is denied (it halts the turn); a subagent is n
     assert.match(r.hookSpecificOutput.permissionDecisionReason, /continue with your recommended option.*Pre teba/);
     const hooks = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', 'hooks', 'hooks.json'), 'utf8'));
     assert.match(hooks.hooks.PreToolUse[0].matcher, /AskUserQuestion/);
+  } finally { fx.cleanup(); }
+});
+
+test('PreToolUse: the project wizard asks in a dialog while its window is open, only in an operator turn (operator 2026-11-04)', () => {
+  const fx = setup();
+  try {
+    const ask = () => fx.hook('pre-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: { questions: [] } }).json?.hookSpecificOutput?.permissionDecision;
+    const project = (...a) => spawnSync(process.execPath, [path.join(import.meta.dirname, '..', 'bin', 'project.mjs'), ...a], { cwd: fx.project, encoding: 'utf8', env: fx.env });
+    const r = project('wizard', 'start', 'novy');
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /wizard open for novy/);
+    assert.notEqual(ask(), 'deny');
+    const state = stateOf(fx);
+    fs.writeFileSync(path.join(fx.brain, 'local', 'threads', `${fx.thread}.json`), JSON.stringify({ ...state, turn_source: 'wake' }));
+    assert.equal(ask(), 'deny', 'a turn started by a message does not open a dialog');
+    fs.writeFileSync(path.join(fx.brain, 'local', 'threads', `${fx.thread}.json`), JSON.stringify({ ...state, wizard: { name: 'novy', until: '2026-01-01T00:00:00Z' } }));
+    assert.equal(ask(), 'deny', 'an expired window');
+    fs.writeFileSync(path.join(fx.brain, 'local', 'threads', `${fx.thread}.json`), JSON.stringify(state));
+    assert.equal(project('wizard', 'end').status, 0);
+    assert.equal(ask(), 'deny');
+    assert.equal(stateOf(fx).wizard, undefined);
   } finally { fx.cleanup(); }
 });
 

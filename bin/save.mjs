@@ -5,7 +5,7 @@
 //   save.mjs decision "<title>" --what "..." --alternatives "..." --reason "..." --relates-to x,y [--supersedes D-0001]
 //   save.mjs rule <name> --content "..." (--enforced-by <file>[:<symbol>][,...] | --unenforced "<why code cannot check it>") [--title "..."] | --remove --reason "..."
 //   save.mjs exception P-XXX --wording "..." --reason "..." [--layer project|harness|machine|local] [--title "..."]
-//   save.mjs skill <name> --description "..." --content "..." --origin error|routine [--aliases a,b] [--script <file>[,<file>]] [--replace | --sed 's/<pattern>/<replacement>/[gim]'] [--from-procedure <name>] [--from-sequence <seq>]
+//   save.mjs skill <name> --description "..." --content "..." --origin error|routine [--aliases a,b] [--script <file>[,<file>]] [--replace | --sed 's/<pattern>/<replacement>/[gim]'] [--from-procedure <name>] [--from-sequence <seq>] | --remove --reason "..."
 //   save.mjs handover <topic> (--task ".." --done "a; b" --next ".." --files "a; b" --questions "a; b" | --file <path>)
 //   save.mjs docs [--message "..."]   persona only: commits the files written directly into docs/ (P-024)
 import fs from 'node:fs';
@@ -13,7 +13,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { parseArgs, fail, today, readText } from '../scripts/util.mjs';
-import { loadContext, isWakeTurn, machineName } from '../scripts/config.mjs';
+import { loadContext, isWakeTurn, machineName, foreignProjectCwd } from '../scripts/config.mjs';
 import { brainWrite, formatWriteResult, syncAndCheckHolder } from '../scripts/brain.mjs';
 import { parseFrontmatter, serializeFrontmatter, asList } from '../scripts/frontmatter.mjs';
 import { makeKey, normalizeKey, hasDiacritics, isValidId, KEY_TYPES } from '../scripts/keys.mjs';
@@ -24,7 +24,7 @@ import { ruleCorpus, judgeRule, unanswered, onlyCondenses } from '../scripts/rul
 import { buildIndexes } from '../scripts/index.mjs';
 import { renderHandover, checkHandover } from '../scripts/brain-checks.mjs';
 import { removeNames } from '../scripts/logs.mjs';
-import { setTopicState } from '../scripts/topic.mjs';
+import { setTopicState, readTopic } from '../scripts/topic.mjs';
 import { workflowSkillNames, PROJECT_SKILLS_DIR } from '../scripts/skills-sync.mjs';
 
 const args = parseArgs(process.argv.slice(2));
@@ -270,9 +270,27 @@ function repeatsBody(body, content) {
   return old.filter((l) => added.has(l)).length * 2 >= old.length;
 }
 
+/** A skill superseded by a workflow skill or principle is removed, not kept twice (P-007, P-022; agent 2026-11-03). */
+function removeSkill(ctx, name) {
+  if (!args.reason) fail('--remove needs --reason "superseded by workflow:<skill> | P-XXX | ..."');
+  const hit = readSkills(ctx.brainDir).find((s) => s.skillName === name);
+  if (!hit) fail(`skill ${name} does not exist`);
+  if (hit.owner === 'operator') fail(`skill ${name} belongs to the operator (skills/operator); propose the removal instead (P-032)`);
+  const dir = path.dirname(hit.path);
+  const files = fs.readdirSync(path.join(ctx.brainDir, dir), { recursive: true }).map(String)
+    .filter((f) => fs.statSync(path.join(ctx.brainDir, dir, f)).isFile()).map((f) => path.posix.join(dir, f.split(path.sep).join('/')));
+  const res = brainWrite(ctx, { ops: files.map((rel) => ({ path: rel, remove: true })), message: `remove skill ${name}: ${args.reason}` });
+  // git does not track directories: the emptied skill dir stays and the brain hook denies rmdir (alice 2026-11-04).
+  const abs = path.join(ctx.brainDir, dir);
+  const left = fs.existsSync(abs) ? fs.readdirSync(abs, { recursive: true }).map(String).filter((f) => fs.statSync(path.join(abs, f)).isFile()) : [];
+  if (fs.existsSync(abs) && !left.length) fs.rmSync(abs, { recursive: true });
+  return finish(ctx, res, files);
+}
+
 function saveSkill(ctx) {
   const [name] = rest;
   if (!name || !isValidId(name) || hasDiacritics(name)) fail('usage: save.mjs skill <name> --description "..." --content "..." --origin error|routine');
+  if (args.remove) return removeSkill(ctx, name);
   if (workflowSkillNames().includes(name)) fail(`"${name}" is a workflow skill name; choose another (P-024)`);
   const origin = args.origin || 'error';
   if (!['error', 'routine'].includes(origin)) fail('origin must be error | routine (P-032)');
@@ -332,7 +350,7 @@ function saveHandover(ctx) {
   const content = args.file ? fs.readFileSync(args.file, 'utf8') : renderHandover({ task: args.task, done: args.done, next: args.next, files: args.files, questions: args.questions });
   const errors = checkHandover(content, ctx.policy.limits.handover_lines);
   if (errors.length) fail(errors.join('\n'));
-  const ops = [{ path: `topics/${topic}/handover.md`, content }, setTopicState(ctx, topic, 'working')];
+  const ops = [{ path: `topics/${topic}/handover.md`, content }, setTopicState(ctx, topic, readTopic(ctx.brainDir, topic)?.state === 'paused' ? 'paused' : 'working')];
   const res = brainWrite(ctx, { ops, message: `handover ${topic}` });
   out(formatWriteResult(res, [`topics/${topic}/handover.md`]));
 }
@@ -350,6 +368,8 @@ function saveDocs(ctx) {
 
 try {
   const ctx = loadContext({ project: args.project });
+  const foreign = foreignProjectCwd(ctx, args.project);
+  if (foreign) fail(foreign);
   const handlers = { memory: saveMemory, decision: saveDecision, rule: saveRule, exception: saveException, skill: saveSkill, handover: saveHandover, docs: saveDocs };
   if (!handlers[category]) fail('usage: save.mjs memory|decision|rule|exception|skill|handover|docs ...');
   handlers[category](ctx);

@@ -8,7 +8,7 @@ Do brain zapisuj iba cez `workflow:save`; Write a Edit do `<brain>` sú zakázan
 Po chybe oprav, nájdi funkčný postup a ulož ho cez `workflow:error` (skill, pri správaní pravidlo) s riadkom „nie <zlý spôsob>, lebo <prečo>“. Pred novým skillom `find`; existujúci dopĺňaj. KAŽDÚ chybu MUSÍŠ nahlásiť správcovi workflow (skill `workflow:error`), aj opravenú. Čo sa stalo „omylom“, je chyba (hook Stop).
 
 ### P-005: Opakovaný postup
-Postup s >3 krokmi bez skillu ide pri `finish` do `procedures.log`; pri treťom výskyte (aj sekvencia, P-030) skill sám vytvor alebo doplň existujúci a oznám to jedným riadkom; súhlas operátora NEŽIADAJ. Zamietnutý postup sa znova nevytvára.
+Postup s >3 krokmi bez skillu ide pri `done` do `procedures.log`; pri treťom výskyte (aj sekvencia, P-030) skill sám vytvor alebo doplň existujúci a oznám to jedným riadkom; súhlas operátora NEŽIADAJ. Zamietnutý postup sa znova nevytvára.
 
 ### P-006: Opakovaná vedomosť
 Pred odvodením z viacerých zdrojov `find`; druhé odvodenie ulož ako záver (1–3 vety + zdroje), nie kópiu.

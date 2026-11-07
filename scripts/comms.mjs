@@ -15,22 +15,47 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { readJson } from './util.mjs';
-import { machineName } from './config.mjs';
+import { machineName, servicesDir } from './config.mjs';
+import { PERSONA_REPO_RE, PERSONA_PREFIX } from './persona-name.mjs';
 
 /**
  * Default client locations relative to the project, first existing wins. Recommended layout (pilot 2026-11-01): mail is
  * shared by all projects and sits outside them; each project folder holds the project and its brain:
  *   <root>/comms/                       mail service (agentic-comms)
  *   <root>/<project-x>/<repo>/          project, its brain next to it: <root>/<project-x>/<brain>/
- * The older flat layout (comms next to the project) is still found.
+ * The older flat layout (comms next to the project) is still found. v3 (D-0003): the installed release of the mail
+ * service is `~/services/agentic-comms/` (absolute, see servicesClient), found before these.
  */
 export const DEFAULT_CLIENTS = ['../../comms/bin/comms.mjs', '../agentic-comms/bin/comms.mjs'];
 export const DEFAULT_CLIENT = DEFAULT_CLIENTS[0];
+/** The installed release of the mail client (v3, D-0003): `~/services/agentic-comms/bin/comms.mjs`. */
+export function servicesClient(env = process.env) {
+  return path.join(servicesDir(env), 'agentic-comms', 'bin', 'comms.mjs');
+}
+/**
+ * Mail name of a project: a persona repo `agent-<name>` is the persona `<name>` (v3: the domain `<name>/` holds the repo
+ * `agent-<name>/`; mail addresses `@alice/main`, `alice/<topic>` stay when the repo is renamed or moved).
+ */
+export function mailProjectName(ctx) {
+  const name = ctx.projectName;
+  return ctx.persona && PERSONA_REPO_RE.test(name || '') ? name.slice(PERSONA_PREFIX.length) : name;
+}
 export const LEVELS = ['blocker', 'steer', 'assist'];
 /** Mechanical categories of the prompt line (P-044, operator 2026-11-02): a reply (reply_to or thread-addressed), else the level. */
 export const CATEGORIES = ['reply', ...LEVELS];
 /** Client subcommands a subagent may run (read only, P-025). The triage subagent is removed (2026-11-02). */
 export const SUBAGENT_ALLOWED = ['receive', 'list', 'count'];
+
+/**
+ * Default client: the pilot layout (`../../comms`, a test instance next to its projects) first, then the installed
+ * release (`~/services/agentic-comms`), then a development checkout next to the project.
+ */
+function defaultClient(projectDir) {
+  const rel = (c) => fs.existsSync(path.resolve(projectDir, c));
+  if (rel(DEFAULT_CLIENTS[0])) return DEFAULT_CLIENTS[0];
+  if (fs.existsSync(servicesClient())) return servicesClient();
+  return DEFAULT_CLIENTS.slice(1).find(rel) || DEFAULT_CLIENT;
+}
 
 /** Resolve the comms settings of a project. Never throws. */
 export function commsSettings(ctx) {
@@ -40,7 +65,7 @@ export function commsSettings(ctx) {
   const cfg = raw && typeof raw === 'object' ? raw : {};
   const explicit = !!(process.env.WORKFLOW_COMMS_CLIENT || cfg.client);
   const clientRel = process.env.WORKFLOW_COMMS_CLIENT || cfg.client
-    || DEFAULT_CLIENTS.find((c) => fs.existsSync(path.resolve(projectDir, c))) || DEFAULT_CLIENT;
+    || defaultClient(projectDir);
   const client = path.resolve(projectDir, clientRel);
   const configFile = cfg.config
     ? path.resolve(projectDir, cfg.config)
@@ -52,7 +77,7 @@ export function commsSettings(ctx) {
     clientRel,
     instance: cfg.instance || null,
     configFile: configFile && fs.existsSync(configFile) ? configFile : null,
-    project: cfg.project || ctx.projectName,
+    project: cfg.project || mailProjectName(ctx),
     outbox: ctx.brainDir ? path.join(ctx.brainDir, 'local', 'outbox') : null,
     clientDir: ctx.brainDir ? path.join(ctx.brainDir, 'local', 'comms') : null,
     waitMs: ctx.policy?.comms?.hook_wait_ms ?? 2000,
@@ -242,7 +267,7 @@ export function recordTurn(ctx, state, held = [], { openedAt = null, next = null
  * Idempotent topic registration in the mail service (P-037, P-041). The holder is the thread in topics/<id>/holder.json
  * unless `holder` is given (null: the topic is free). `takeover: true` lets the service replace another holder (a takeover
  * on operator instruction, P-037, P-045); `release: true` clears the holder (client flags `--takeover`, `--release`);
- * `close: true` marks the finished topic closed: the mail refuses new mail for it (410) and bounces what still waits.
+ * `close: true` marks the closed topic closed: the mail refuses new mail for it (410) and bounces what still waits.
  */
 export function registerTopic(ctx, topicId, { holder = undefined, subject, takeover = false, release = false, close = false } = {}) {
   const s = commsSettings(ctx);

@@ -107,6 +107,35 @@ export function gitRetry(args, opts = {}, attempts = 6) {
   return res;
 }
 
+// Remote failures that pass on a later try (flaky ssh auth or network): retried with a short wait.
+const TRANSIENT_REMOTE = /Permission denied \(publickey\)|Could not read from remote|Connection (reset|closed|refused|timed out)|kex_exchange_identification|ssh_exchange_identification|Could not resolve host|Operation timed out|early EOF|remote end hung up/i;
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** git fetch/push: retries transient remote failures (ssh auth, network) after short waits. */
+export function gitRemote(args, opts = {}, waits = [500, 1500, 3000]) {
+  let res = gitRetry(args, opts);
+  for (const wait of waits) {
+    if (res.ok || !TRANSIENT_REMOTE.test(res.stderr)) return res;
+    sleepSync(wait);
+    res = gitRetry(args, opts);
+  }
+  return res;
+}
+
+/** Short ssh diagnosis for an auth failure: what the agent can check, not only "unpushed". */
+export function remoteDiagnosis(stderr, env = process.env) {
+  if (!/publickey|Could not read from remote/i.test(String(stderr || ''))) return '';
+  const home = env.HOME;
+  const sshDir = home ? path.join(home, '.ssh') : null;
+  const config = !!sshDir && fs.existsSync(path.join(sshDir, 'config'));
+  let keys = 0;
+  try { keys = fs.readdirSync(sshDir).filter((f) => /^id_/.test(f) && !f.endsWith('.pub')).length; } catch { /* no ssh dir */ }
+  return `ssh: HOME ${home ? 'set' : 'unset'}, ssh config ${config ? 'present' : 'missing'}, default keys ${keys}, agent socket ${env.SSH_AUTH_SOCK ? 'set' : 'unset'}; failed after retries, check with ssh -vT <remote host>`;
+}
+
 export function gitToplevel(dir) {
   const res = git(['rev-parse', '--show-toplevel'], { cwd: dir });
   return res.ok ? path.resolve(res.stdout) : null;

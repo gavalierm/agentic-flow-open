@@ -105,18 +105,18 @@ test('P-050: first reply starts with the structured status block; free topics of
     const r = fx.hook('session-start.mjs', { source: 'startup' });
     assert.equal(r.json.systemMessage, undefined);
     assert.match(r.context, /first reply in this session MUST start with exactly the next \d+ lines, verbatim, before anything else \(no tags, no code fence\)/);
-    assert.equal(block(r.context), 'Téma: žiadna\n\nDostupné témy:\n- žiadne\n\nAká bude téma?');
+    assert.equal(block(r.context), 'project / bez témy\n\nDostupné témy:\n- žiadne\n\nAká bude téma?');
     // The question only for an unknown topic: a prompt that names the topic is claimed and answered with `Téma: <id>` (operator 2026-11-02).
-    assert.match(r.context, /only for a topic that stays unknown[^\n]*start that reply instead with `Téma: <id>`/);
+    assert.match(r.context, /only for a topic that stays unknown[^\n]*start that reply instead with `project \/ <id>`/);
     assert.equal(fx.run('topic.mjs', ['create', 'work', '--subject', 'Work']).status, 0);
     const held = fx.hook('session-start.mjs', { source: 'startup' }).context;
-    assert.equal(block(held), 'Téma: work');
+    assert.equal(block(held), 'project / work');
     assert.doesNotMatch(held, /stays unknown/, 'held topic: no question, no alternative');
     const other = fx.hook('session-start.mjs', { source: 'startup' }, { env: { WORKFLOW_THREAD_ID: 'b2' } });
     assert.match(block(other.context), /- žiadne/, 'topic held by another thread is not offered');
     assert.equal(fx.run('topic.mjs', ['release', 'work']).status, 0);
     const freed = fx.hook('session-start.mjs', { source: 'startup' }, { env: { WORKFLOW_THREAD_ID: 'b2' } });
-    assert.equal(block(freed.context), 'Téma: žiadna\n\nDostupné témy:\n- work – Work\n\nAká bude téma?');
+    assert.equal(block(freed.context), 'project / bez témy\n\nDostupné témy:\n- work – Work\n\nAká bude téma?');
     assert.doesNotMatch(fx.hook('user-prompt-submit.mjs', { prompt: 'hi' }).context, /status block/, 'only at start');
   } finally { fx.cleanup(); }
 });
@@ -170,5 +170,28 @@ test('T3 /clear (t3code#24152): the transcript T3 resumes becomes a link to the 
       r = fy.hook('session-start.mjs', { source: 'clear', session_id: C, transcript_path: tp(C) }, { env: { T3CODE_THREAD_ID: 'mcp:b9', WORKFLOW_T3_PROVIDER_LOGS: logs } });
       assert.match(r.context, /kurzor T3 6168aa37 presmerovaný na novú session 0dec3bb3/);
     } finally { fy.cleanup(); }
+  } finally { fx.cleanup(); }
+});
+
+// Several PCs on one brain (alice/main 2026-11-05): session start pulls what another machine pushed.
+test('session start fast-forwards the brain to origin; a clone with own changes is reported, not touched', () => {
+  const fx = setup({ second: true });
+  try {
+    assert.equal(fx.runB('save.mjs', ['memory', 'tool', 'from-b', '--content', 'pushed by machine B']).status, 0);
+    const originHead = fx.git(fx.origin, 'rev-parse', 'main');
+    let r = fx.hook('session-start.mjs', { source: 'startup' });
+    assert.match(r.context, /brain: updated from origin \(1 commit\(s\)/);
+    assert.equal(fx.git(fx.brain, 'rev-parse', 'HEAD'), originHead);
+    assert.match(r.context, /from-b/, 'memory index of the boot is built after the pull');
+    r = fx.hook('session-start.mjs', { source: 'resume' });
+    assert.doesNotMatch(r.context, /brain: /);
+
+    assert.equal(fx.runB('save.mjs', ['memory', 'tool', 'second', '--content', 'y']).status, 0);
+    fs.appendFileSync(path.join(fx.brain, '.gitattributes'), '# local edit\n');
+    const head = fx.git(fx.brain, 'rev-parse', 'HEAD');
+    r = fx.hook('session-start.mjs', { source: 'startup' });
+    assert.match(r.context, /brain: 1 commit\(s\) behind origin, not updated \(uncommitted changes: \.gitattributes\)/);
+    assert.equal(fx.git(fx.brain, 'rev-parse', 'HEAD'), head);
+    assert.match(fx.read('.gitattributes'), /# local edit/);
   } finally { fx.cleanup(); }
 });

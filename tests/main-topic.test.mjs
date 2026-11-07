@@ -51,11 +51,11 @@ function persona() {
   return { dir, run, hook, client, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
 }
 
-test('persona main thread: topic main is held, registered as @<persona>/main, counts its mailbox, never free or finished', () => {
+test('persona main thread: topic main is held, registered as @<persona>/main, counts its mailbox, never free or closed', () => {
   const p = persona();
   try {
     const before = block(p.hook('session-start.mjs', { source: 'startup' }));
-    assert.match(before, /^Téma: žiadna/, 'without topic main the main thread has no topic (the bug)');
+    assert.match(before, /^bob \/ bez témy/, 'without topic main the main thread has no topic (the bug)');
 
     const claim = p.run('topic.mjs', ['main']);
     assert.equal(claim.status, 0, claim.out);
@@ -63,18 +63,18 @@ test('persona main thread: topic main is held, registered as @<persona>/main, co
     assert.ok(p.client.lines().some((l) => /^register-topic --persona bob --main --holder p1\b/.test(l)), p.client.lines().join('\n'));
 
     const after = block(p.hook('session-start.mjs', { source: 'startup' }));
-    assert.equal(after, 'Téma: main\nPošta: 1 (1 blocker)');
+    assert.equal(after, 'bob / main\nPošta: 1 (1 blocker)');
     assert.ok(p.client.lines().some((l) => /^count --persona bob --thread p1\b/.test(l)), 'mailbox @bob/main is counted');
 
     assert.equal(p.run('topic.mjs', ['main']).status, 0, 'idempotent');
     assert.match(p.run('topic.mjs', ['create', 'main', '--subject', 'x']).out, /reserved for the persona main thread/);
-    const fin = p.run('finish.mjs', ['--topic', '--topic-id', 'main', '--verified', 'x']);
+    const fin = p.run('done.mjs', ['--topic', '--topic-id', 'main', '--verified', 'x']);
     assert.notEqual(fin.status, 0);
-    assert.match(fin.out, /never finished or archived/);
+    assert.match(fin.out, /never closed or archived/);
 
     // A work topic of the main thread comes first; main is not offered as free to other threads.
     assert.equal(p.run('topic.mjs', ['create', 'work', '--subject', 'Work']).status, 0);
-    assert.equal(block(p.hook('session-start.mjs', { source: 'startup' })).split('\n')[0], 'Téma: work');
+    assert.equal(block(p.hook('session-start.mjs', { source: 'startup' })).split('\n')[0], 'bob / work');
   } finally { p.cleanup(); }
 });
 
@@ -97,7 +97,7 @@ test('topic create --for-thread: the new thread holds the topic from its first t
     assert.equal(holder.thread, 'mcp:launch:abc');
     assert.equal(holder.assigned_by, 'a1');
     const ctx = fx.hook('session-start.mjs', { source: 'startup' }, { env: { WORKFLOW_THREAD_ID: 'mcp:launch:abc' } }).context;
-    assert.equal(block(ctx), 'Téma: beszel');
+    assert.equal(block(ctx), 'project / beszel');
     assert.match(fx.run('topic.mjs', ['create', 'x', '--subject', 'X', '--for-thread', 'bad id']).out, /is not a thread id/);
   } finally { fx.cleanup(); }
 });
@@ -172,11 +172,11 @@ test('topic main in a wake turn: first adoption allowed, taking over a held main
   } finally { p.cleanup(); }
 });
 
-test('topic main held by another thread: takeover only with --force; finish on main counts the persona mailbox (bob 2026-11-01)', async () => {
+test('topic main held by another thread: takeover only with --force; done on main counts the persona mailbox (bob 2026-11-01)', async () => {
   const p = persona();
   try {
     assert.equal(p.run('topic.mjs', ['main']).status, 0);
-    const fin = p.run('finish.mjs', ['--topic-id', 'main', '--verified', 'x']);
+    const fin = p.run('done.mjs', ['--topic-id', 'main', '--verified', 'x']);
     assert.equal(fin.status, 0, fin.out);
     assert.match(fin.out, /mail: 1 waiting for topic main \(free point\)/);
     const holder = path.join(p.dir, 'topics/main/holder.json');
@@ -198,14 +198,14 @@ test('topic main held by another thread: takeover only with --force; finish on m
   } finally { p.cleanup(); }
 });
 
-test('topic main is never released; finish on main records no free point and says it stays held (P-045)', () => {
+test('topic main is never released; done on main records no free point and says it stays held (P-045)', () => {
   const p = persona();
   try {
     assert.equal(p.run('topic.mjs', ['main']).status, 0);
     const rel = p.run('topic.mjs', ['release', 'main']);
     assert.notEqual(rel.status, 0, rel.out);
     assert.match(rel.out, /never released \(P-045\)/);
-    const fin = p.run('finish.mjs', ['--topic-id', 'main', '--verified', 'x']);
+    const fin = p.run('done.mjs', ['--topic-id', 'main', '--verified', 'x']);
     assert.equal(fin.status, 0, fin.out);
     assert.doesNotMatch(fin.out, /is free/);
     assert.match(fin.out, /topic main stays held by p1/);

@@ -4,7 +4,7 @@
 //         names <procedures|derivations>
 import { parseArgs, fail } from '../scripts/util.mjs';
 import { loadContext } from '../scripts/config.mjs';
-import { flushBuffer, listFailures, existingNames } from '../scripts/logs.mjs';
+import { flushBuffer, listFailures, existingNames, resolveFailureOp } from '../scripts/logs.mjs';
 import { brainWrite } from '../scripts/brain.mjs';
 
 const args = parseArgs(process.argv.slice(2));
@@ -19,10 +19,9 @@ try {
     const lines = listFailures(ctx.brainDir);
     if (args.resolve) {
       const n = Number(args.resolve);
-      if (!lines[n - 1]) fail(`no failure line ${n}`);
-      const keep = lines.filter((_, i) => i !== n - 1);
-      brainWrite(ctx, { internal: true, ops: [{ path: 'logs/failures.log', content: keep.length ? keep.join('\n') + '\n' : '' }], message: `failure ${n} processed via error skill` });
-      process.stdout.write(`resolved failure ${n}; remaining ${keep.length}\n`);
+      const r = resolveFailureOp(ctx.brainDir, n);
+      brainWrite(ctx, { internal: true, ops: [r.op], message: `failure ${n} processed via error skill` });
+      process.stdout.write(`resolved failure ${n}; remaining ${r.remaining}\n`);
     } else {
       process.stdout.write(lines.length ? lines.map((l, i) => `${i + 1}. ${l}`).join('\n') + '\n' : 'no unprocessed failures\n');
     }

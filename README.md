@@ -1,8 +1,8 @@
 # workflow (agentic-flow)
 
-Plugin pre Claude Code, ktorý dáva agentovi pevné pravidlá práce, základné skilly a skripty na prácu s „brain“ (pamäť, rozhodnutia, témy, handover). Jeden klon na stroji, zapína sa osobitne v každom projekte. Princípy, z ktorých workflow vychádza, sú v `docs/PRINCIPLES.md`. Plán implementácie a nasadenia pilotu je v `PLAN.md`.
+Plugin pre Claude Code, ktorý dáva agentovi pevné pravidlá práce, základné skilly a skripty na prácu s „brain“ (pamäť, rozhodnutia, témy, handover). Jeden klon na stroji, zapína sa osobitne v každom projekte. Princípy, z ktorých workflow vychádza, sú v `docs/principles/`. Plán implementácie a nasadenia pilotu je v `PLAN.md`.
 
-Stav: M1–M3 hotové (brain, témy, štart, stavový riadok, hooky, skilly `save`, `find`, `topic`, `finish`, `error`, `delegate`, `consolidate`), M5 hotové (pošta vo workflow: stavový riadok `mail: n`, skill `comms`), M6 hotové (budenie cez T3, repo `agentic-comms`), M7 hotové (adaptér Codex; funkčnosť v Codexe overí smoke test pilotu). Pošta sama (M4) je v repe `agentic-comms`.
+Stav: M1–M3 hotové (brain, témy, štart, stavový riadok, hooky, skilly `save`, `find`, `topic`, `done`, `error`, `delegate`, `consolidate`), M5 hotové (pošta vo workflow: stavový riadok `mail: n`, skill `comms`), M6 hotové (budenie cez T3, repo `agentic-comms`), M7 hotové (adaptér Codex; funkčnosť v Codexe overí smoke test pilotu). Pošta sama (M4) je v repe `agentic-comms`.
 
 ## Čo to je
 
@@ -117,9 +117,28 @@ Oba súbory generuje adaptér: `node ~/.claude/skills/workflow/bin/adapter.mjs c
 
 Persona je projekt, ktorého repo je zároveň brain (P-024): `.workflow.json` má `"brain": "."`. Persona nemá vlastné dáta projektu; dokumenty a výstupy idú do spravovaných projektov.
 
-1. Nová persona: `node ~/.claude/skills/workflow/bin/persona-create.mjs <meno>` (krátke meno, napr. `bob`); skript sám odvodí repo `agent-<meno>`, overí, že neexistuje (ak existuje, skončí chybou, náhradné meno nepoužije), založí súkromné repo a brain v `~/agentic/agent-<meno>`. Nie ručné `brain-init` ani ručné založenie repa, lebo prefix `agent-` by sa dal obísť. Existujúce repo persony: `brain-init.mjs . --attach`.
+1. Nová persona: `node ~/.claude/skills/workflow/bin/persona-create.mjs <meno>` (krátke meno, napr. `bob`); skript sám odvodí repo `agent-<meno>`, overí, že neexistuje (ak existuje, skončí chybou, náhradné meno nepoužije), založí súkromné repo a brain v doméne `~/agentic/<meno>/agent-<meno>` so značkou `.agentic-domain` (brain `agent-<meno>`). Nie ručné `brain-init` ani ručné založenie repa, lebo prefix `agent-` by sa dal obísť. Existujúce repo persony: `brain-init.mjs . --attach`.
 2. V repe persony: `node ~/.claude/skills/workflow/bin/adapter.mjs claude-code --brain .`. Adaptér vygenerované súbory (`.workflow.json`, `.claude/settings.json`, `.gitignore`) sám commitne cez skript brain a pushne.
-3. Agent v persone priamo zapisuje iba do `scratch/` a `local/`; všetko ostatné ide cez `save`, `topic`, `finish`. Worktree persony používa brain hlavného checkoutu.
+3. Agent v persone priamo zapisuje iba do `scratch/` a `local/`; všetko ostatné ide cez `save`, `topic`, `done`. Worktree persony používa brain hlavného checkoutu.
+
+### Doména (v3)
+
+Doména je priečinok, v ktorom agenti smú zapisovať (P-052): persona a repá, ktoré spravuje, ležia spolu; názvy priečinkov sú názvy git repozitárov.
+
+```
+~/agentic/<doména>/
+  .agentic-domain          {"brain": "agent-<meno>"}  (relatívne ku koreňu domény)
+  agent-<meno>/            brain persony (.workflow.json "brain": ".")
+  <repo>/                  spravované repo; vedomosť repa v <repo>/agentic/ (HANDOVER.md, decisions/, runbooks/, memory/, skills/)
+  .worktrees/<repo>/<téma>/  kópie kódu kódových tém (git worktree, vetva topic/<téma>)
+~/services/<repo>/         nainštalované vydanie (checkout tagu), z ktorého bežia služby; súbory sa tu nemenia, iba checkout tagu
+```
+
+Zápis mimo domény hook zamietne (nepýta sa). Výnimky má brain domény v `policy.json`: `{"domain": {"allow_outside": ["~/cesta", "/etc", "sudo"]}}` (`sudo` povolí príkaz sudo). Platí aj pre `~/services/<repo>` (nainštalované vydanie): inak sa mení iba inštaláciou tagu, ale záznam v `allow_outside` ho povolí. Značku `.agentic-domain` agent nezmení.
+
+### Jeden brain na viacerých počítačoch
+
+Každý počítač má vlastný klon brainu a stabilné meno stroja v `~/.config/agentic-flow/machine-id` (pri prvom behu z hostname, dá sa prepísať). Štart session stiahne brain z origin. Logy sa zapisujú do `logs/<stroj>/<dátum>.log` (iba pridávaním); spojený pohľad je v `local/logs/`. Pri synchronizácii sa `holder.json` vyrieši automaticky (platí origin a nový držiteľ sa overí), pri handoveri sa zachovajú obe verzie s poznámkou a `topic.json` sa zlúči po poliach. Pri ostatných súboroch skript vypíše príkaz `brain.mjs resolve <súbor> --keep local|remote`. Držiteľ témy je vlákno na konkrétnom stroji. Prechod na iný stroj: `topic.mjs handoff <téma> --task … --done … --next …`, potom na druhom stroji `topic.mjs claim <téma>`. Ak tému drží iný stroj bez aktivity dlhšie ako `topics.stale_machine_hours` (predvolene 12), claim ponúkne prevzatie po súhlase operátora. Všetky stroje drží na jednom vydaní `{"workflow_version": "v0.9.11"}` v `policy.json` brainu (od v0.9.11): štart session prepne inštaláciu vydania na tento tag.
 
 ### Cez agenta
 
@@ -136,9 +155,9 @@ Potom ukonči session a spusti `claude` znova, aby sa plugin načítal.
 - **Spustenie vlákna:** v T3 dostane vlákno ID automaticky. V termináli spusti `node ~/.claude/skills/workflow/bin/thread.mjs` (vygeneruje `WORKFLOW_THREAD_ID` a spustí `claude`; ďalšie argumenty za `--` idú harnessu, napr. `-- --resume`). Bez stabilného ID vlákno nemôže zabrať tému.
 - **Pri štarte** začne prvá odpoveď agenta stavovým blokom: `Téma: <id>` (pri čakajúcej pošte aj `Pošta: n`), alebo `Téma: žiadna`, zoznam voľných tém a otázka `Aká bude téma?`; tá iba vtedy, keď téma nie je známa (zadanie, ktoré tému menuje, ju nevyvolá, P-050). Agent navyše pri každom tvojom prompte dostane stavový riadok `thread <id> | topic <id> (<state>, mode <mode>) | mail: n`, aj po `/clear` a `--resume`; ten vidí iba agent.
 - **Hlavné vlákno persony** drží trvalú tému `main` (`topic main`, raz v hlavnom vlákne); jeho blok ukáže `Téma: main` a počíta poštu `@<persona>/main`. **Téma pre nové vlákno:** agent založí prázdne vlákno a `topic create <id> --subject "…" --for-thread <id vlákna>`, nové vlákno tému drží od prvého ťahu.
-- **Téma:** „založ tému `<id>` s predmetom …“ → agent spustí `workflow:topic` (`create`, pri kóde vznikne klon `../<projekt>-topics/<id>/`). Dve vlákna nemôžu držať tú istú tému; prevzatie len na tvoj pokyn.
+- **Téma:** „založ tému `<id>` s predmetom …“ → agent spustí `workflow:topic` (`create`, pri kóde vznikne worktree `<doména>/.worktrees/<repo>/<id>/`, mimo domény klon `../<projekt>-topics/<id>/`). Dve vlákna nemôžu držať tú istú tému; prevzatie len na tvoj pokyn.
 - **Ukladanie:** „ulož …“, „zapamätaj si …“, „volám sa …“ → `workflow:save`. Ručný zápis do brain agent nemôže (deny + pre-commit).
-- **Ukončenie:** „hotovo“ → `workflow:finish` (handover → voľná, téma `free`); „téma je hotová“ → `finish --topic` (zlúčenie do hlavnej vetvy, archivácia).
+- **Ukončenie:** „hotovo“ → `workflow:done` (handover → voľná, téma `free`); „téma je hotová“ → `done --topic` (zlúčenie do hlavnej vetvy, archivácia).
 - **Ručný zápis operátora do brain** (napr. skill v `skills/operator/`): commitni s `git commit --no-verify`; pre-commit odmieta commity mimo skriptov zámerne.
 
 ## Pošta (voliteľné)
@@ -264,7 +283,7 @@ Projekty, ktoré majú workflow zapnutý, pri štarte iba oznámia chýbajúci p
 | pri štarte „brain not found“ | zlá cesta v `.workflow.json`, alebo brain na tomto stroji leží inde | oprav cestu (relatívna, s `/`), alebo doplň `local/workflow.json` |
 | `git pull` hlási lokálne zmeny v klone | do klonu niekto zapisoval (nemá) | `git -C ~/.claude/skills/workflow status`; zmeny zahoď iba vedome (`git checkout -- .`), potom `pull` |
 | Windows: `git pull` mení konce riadkov | chýba `core.autocrlf=false` | repo má `.gitattributes` s `eol=lf`; nastav `git config --global core.autocrlf false` |
-| agent zapísal do brain priamo a commit zlyhal | pre-commit hook brain odmietol commit bez značky skriptu (zámer) | zápis do brain ide iba cez skripty workflow (`save`, `topic`, `finish`) |
+| agent zapísal do brain priamo a commit zlyhal | pre-commit hook brain odmietol commit bez značky skriptu (zámer) | zápis do brain ide iba cez skripty workflow (`save`, `topic`, `done`) |
 | stavový riadok ukazuje `thread - (no stable id …)` | session bez stabilného ID vlákna (IDE, desktop) | spusti harness cez `node ~/.claude/skills/workflow/bin/thread.mjs`, alebo pracuj bez zabratia témy |
 | `topic claim` hlási `held by thread …` | tému drží iné vlákno (aj zaniknuté) | pokračuj v pôvodnom vlákne, alebo na tvoj výslovný pokyn `claim <id> --force --operator-approved` |
 | pri štarte `(local changes in plugin clone, P-014)` | v klone workflow niekto zapisoval | `git -C ~/.claude/skills/workflow status`, zmeny zahoď vedome |

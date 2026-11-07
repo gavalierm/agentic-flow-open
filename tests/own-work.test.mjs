@@ -23,6 +23,7 @@ function repo(fx, name, ignoreScratch = true) {
 test('work files under the ignored scratch/ of any repo the thread works in are removed without asking', () => {
   const fx = setup();
   try {
+    fs.writeFileSync(path.join(fx.root, '.agentic-domain'), '{"brain":"brain"}'); // sibling repos of one domain (v3, D-0002)
     const flow = repo(fx, 'flow');
     fs.mkdirSync(path.join(flow, 'scratch', 'dbg-EbdivC'), { recursive: true });
     fs.writeFileSync(path.join(flow, 'scratch', 'dbg-EbdivC', 'x.json'), '{}');

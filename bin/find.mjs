@@ -10,7 +10,7 @@ try {
   let matches;
   let label;
   if (args['relates-to']) {
-    matches = findRelatesTo(ctx.brainDir, args['relates-to']);
+    matches = findRelatesTo(ctx.brainDir, args['relates-to'], { domain: ctx.domain });
     label = `relates-to ${args['relates-to']}`;
   } else if (args.similar) {
     matches = findSimilar(ctx.brainDir, args.similar);
@@ -18,10 +18,10 @@ try {
   } else {
     const q = args._.join(' ');
     if (!q) fail('usage: find.mjs <query> | --relates-to <path> | --similar <key>');
-    matches = find(ctx.brainDir, q);
+    matches = find(ctx.brainDir, q, ctx.domain);
     label = q;
     if (!matches.length) {
-      matches = findWords(ctx.brainDir, q);
+      matches = findWords(ctx.brainDir, q, ctx.domain);
       if (matches.length && !args.json) process.stdout.write(`no exact match: ${q}; word matches:\n`);
     }
   }

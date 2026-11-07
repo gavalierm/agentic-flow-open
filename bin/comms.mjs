@@ -17,7 +17,7 @@ import { parseArgs, fail, nowIso, readStdin } from '../scripts/util.mjs';
 import { loadContext, inSubagent, readThreadState, writeThreadState } from '../scripts/config.mjs';
 import { commsSettings, runClient, mailQueries, queryArgs, mailCount, formatMail, registerTopic, parseAddress, isMainTopic, LEVELS } from '../scripts/comms.mjs';
 import { readTopic, mailboxTopics, heldTopics, heldBy } from '../scripts/topic.mjs';
-import { readHolder } from '../scripts/brain.mjs';
+import { readHolder, isHolderOf } from '../scripts/brain.mjs';
 import { setTimer, clearTimer, activeTimer, REPLY_WINDOW_MS } from '../scripts/waker.mjs';
 
 const args = parseArgs(process.argv.slice(2));
@@ -287,7 +287,7 @@ function cmdRegister(ctx) {
     // The holder is the thread in topics/<id>/holder.json (P-037), never this thread by default.
     const holder = readHolder(ctx.brainDir, id);
     if (!holder.thread) fail(`topic ${id} is not held: claim it first (topic.mjs claim ${id}, P-037)`);
-    if (holder.thread !== ctx.thread) fail(`topic ${id} is ${heldBy(holder)}, not this thread: claim it with topic.mjs claim ${id} (P-037) to register it here`);
+    if (!isHolderOf(holder, ctx.thread)) fail(`topic ${id} is ${heldBy(holder)}, not this thread: claim it with topic.mjs claim ${id} (P-037) to register it here`);
     const r = registerTopic(ctx, id, { holder: holder.thread });
     out(r.ok ? `registered ${r.project}/${r.topic} (holder ${r.holder || '-'}${r.created ? ', new' : ''})` : `not registered ${id}: ${r.reason}`);
   }

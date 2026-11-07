@@ -1,18 +1,21 @@
 #!/usr/bin/env node
 // PreToolUse: topic-owned code (P-012), secrets outside local/, brain protection (P-013, persona P-024), dangerous targets (P-018), work files outside the project (P-052), subagent limits incl. mail (P-025), decision binding (P-031), agent-to-agent channel (P-055), foreground waiting (P-057). Output: deny/ask or 1 line (c).
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { readHookInput, emit, permissionOutput, contextOutput, isMain } from '../scripts/hooks-io.mjs';
-import { loadContext, readThreadState, writeThreadState, personaWritable, SCRATCH_DIR } from '../scripts/config.mjs';
+import { loadContext, allowOutside, WORKTREES_DIR, servicesDir, readThreadState, writeThreadState, personaWritable, SCRATCH_DIR, isWakeTurn } from '../scripts/config.mjs';
+import { wizardOpen } from '../scripts/wizard.mjs';
 import { git, isInside, toPosix } from '../scripts/util.mjs';
 import { findRelatesTo } from '../scripts/find.mjs';
 import { SUBAGENT_ALLOWED } from '../scripts/comms.mjs';
 import { readTopics } from '../scripts/records.mjs';
 import { findSecret } from '../scripts/secrets.mjs';
 import { inWorkScratch, ownedEdit, claimOwn, inPlaceEdits, snapshotShell } from '../scripts/own-files.mjs';
+import { analyze, bypassOf, bypassReason, callKey, gitHookBypass, guardConfigWrite, stateDenials, transcriptDenials, withDenial } from '../scripts/bypass.mjs';
 
-export const HOOK_META = { event: 'PreToolUse', class: 'block+c', limit: '1 line', principles: ['P-012', 'P-013', 'P-018', 'P-024', 'P-025', 'P-031', 'P-052', 'P-055'] };
+export const HOOK_META = { event: 'PreToolUse', class: 'block+c', limit: '1 line', principles: ['P-012', 'P-013', 'P-018', 'P-024', 'P-025', 'P-031', 'P-052', 'P-054', 'P-055'] };
 
 const FILE_TOOLS = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'];
 
@@ -173,6 +176,26 @@ const unmask = (s) => s.replace(/[\u0001-\u0005]/g, (c) => UNMASK[c]).replace(/^
  * Absolute filesystem targets a shell command writes or deletes (P-018, P-013). `cd <dir>` changes the base of
  * relative paths for the following parts; cp sources are only read; redirects to devices (>/dev/null, >&2) are not files.
  */
+/**
+ * Recursive owner/mode change (`chown -R`, `chgrp -R`, `chmod -R`, `setfacl -R`), also inside `sudo bash -c '…'`: it rewrites
+ * every file under the target and git does not record it. Asks unless every path is absolute and inside the scratch dir
+ * (2026-11-03: a leftover `chown -R user:user .` in a compound sudo command changed 8 root files in the home).
+ */
+export function recursiveModeChange(command, cwd, scratchDir) {
+  const re = /(^|[\s;&|('"`])(chown|chgrp|chmod|setfacl)\s+([^;&|\n'"`)]*)/g;
+  const hits = [];
+  for (let m; (m = re.exec(String(command || ''))); ) {
+    const words = m[3].trim().split(/\s+/).filter(Boolean);
+    if (!words.some((w) => /^-[a-zA-Z]*R[a-zA-Z]*$/.test(w) || w === '--recursive')) continue;
+    const args = words.filter((w) => !w.startsWith('-'));
+    const paths = args.slice(1); // the first is the owner, mode or ACL spec
+    const cd = /(^|[\s;&|('"`])(cd|pushd)\s/.test(String(command));
+    const safe = paths.length && !cd && paths.every((p) => path.isAbsolute(p) && isInside(scratchDir, p));
+    if (!safe) hits.push(`${m[2]} ${words.join(' ')}`.trim());
+  }
+  return hits.length ? hits : null;
+}
+
 export function bashTargets(command, cwd = process.cwd()) {
   const targets = [];
   let base = cwd;
@@ -205,6 +228,112 @@ export function bashTargets(command, cwd = process.cwd()) {
     }
   }
   return targets;
+}
+
+/**
+ * Paths a shell command writes (P-052): redirects, cp/mv/tee destinations, mkdir/touch and output options of any program
+ * (`--outdir /tmp/x`, `-o ~/x`). Removing files is not counted (cleanup goes through P-018). 2026-11-04: `wrangler deploy
+ * --dry-run --outdir /tmp/claude-1007/wr` left a bundle outside the project; only Write and Edit were checked.
+ */
+// `--outDir` (tsc) and `--outdir` (wrangler) alike; short `-o` only lower case (`curl -O` takes no value).
+const OUTPUT_LONG = /^--(out|output|outdir|out-dir|output-dir|outfile|out-file|output-file|dest|destination|target-dir|log-file|cache-dir|prefix)$/i;
+const OUTPUT_OPT = { test: (w) => w === '-o' || OUTPUT_LONG.test(w) };
+// In find and test/[ `-o` is the logical OR, not an output file (alice 2026-11-04: `find . -path ./.git -prune -o -type f`
+// was denied as a write to `-type`).
+const OR_O_PROGS = new Set(['find', 'test', '[', '[[']);
+export function shellWrites(command, cwd = process.cwd(), env = process.env) {
+  const found = [];
+  let base = cwd;
+  const home = env.HOME || '';
+  const abs = (p) => path.resolve(base, p.startsWith('~/') ? path.join(home, p.slice(2)) : p);
+  const add = (w) => { const v = unmask(w); if (v && !/[$`*?]/.test(v) && !/^\/dev\//.test(v)) found.push(abs(v)); };
+  for (const part of maskShell(command).split(/\s*(?:&&|\|\||;|\n|\|)\s*/)) {
+    const words = part.trim().split(/\s+/).filter(Boolean);
+    const lead = words[0] === 'sudo' ? 1 : 0;
+    const prog = words[lead]?.split('/').pop();
+    if (prog === 'cd') { if (words[lead + 1] && !/[$`]/.test(words[lead + 1])) base = abs(unmask(words[lead + 1])); continue; }
+    const args = words.slice(lead + 1).filter((w) => !w.startsWith('-') && !/^['"]?[$<>|(`]/.test(w) && !/^[0-9]*>/.test(w));
+    if ((prog === 'cp' || prog === 'mv' || prog === 'ln' || prog === 'install') && args.length > 1) add(args[args.length - 1]);
+    if (prog === 'tee' || prog === 'mkdir' || prog === 'touch') args.forEach(add);
+    for (let i = lead + 1; i < words.length; i++) {
+      const w = unmask(words[i]);
+      const eq = w.match(/^(--[a-zA-Z-]+)=(.+)$/);
+      if (eq && OUTPUT_OPT.test(eq[1])) add(eq[2]);
+      else if (OUTPUT_OPT.test(w) && words[i + 1] && !(w === '-o' && OR_O_PROGS.has(prog))) add(words[i + 1]);
+    }
+    for (const m of part.matchAll(/(?:^|\s)[0-9]*>{1,2}\s*(\S+)/g)) if (!/^&/.test(unmask(m[1]))) add(m[1]);
+  }
+  return [...new Set(found)];
+}
+
+/**
+ * Where the agent may write (P-052). With a domain (v3, D-0002): the domain folder and the domain brain's explicit
+ * `domain.allow_outside` list. Without one (layout not migrated yet): the project, its topic copies and, in a persona,
+ * its managed sibling projects.
+ */
+function insideProject(ctx, abs) {
+  if (ctx.domain) return isInside(ctx.domain.root, abs) || ctx.domain.allowOutside.some((d) => isInside(d, abs));
+  return isInside(ctx.projectDir, abs) || isInside(topicsDir(ctx.projectDir), abs) || Boolean(ctx.persona && managedProjectOf(ctx.projectDir, abs))
+    || allowOutside(ctx.policy).paths.some((d) => isInside(d, abs));
+}
+/** The operator's explicit write exceptions (policy `domain.allow_outside` paths), with or without a domain marker. */
+function outsideAllowed(ctx) {
+  return ctx.domain ? ctx.domain.allowOutside : allowOutside(ctx.policy).paths;
+}
+function boundaryActive(ctx) {
+  return Boolean(ctx.domain) || Boolean(ctx.brainInfo && !ctx.brainInfo.error);
+}
+function outsideReason(ctx, abs) {
+  const scratch = toPosix(path.join(ctx.projectDir, SCRATCH_DIR));
+  const where = ctx.domain ? `outside the domain ${toPosix(ctx.domain.root)}` : 'outside the project';
+  const extra = ctx.domain ? '; a lasting exception is only the domain brain policy domain.allow_outside, changed on the operator\'s instruction' : '';
+  return `${toPosix(abs)} is ${where}${isTempPath(abs) ? ' (system temp dir)' : ''}; the agent writes only inside it: work files and tool output go to ${scratch}/ (gitignored, no confirmation, P-052)${extra}`;
+}
+/**
+ * Installed releases (D-0003): `~/services/<repo>/` is a checkout of a release tag that the running services use; it
+ * changes only through git checkout of a tag (release), never by a file write. The one exception is the operator's explicit
+ * `domain.allow_outside` entry covering the path (operator 2026-11-05: an allow_outside entry must work, that is its point).
+ */
+export function servicesWrite(absPaths, env = process.env, allowed = []) {
+  const root = servicesDir(env);
+  const hit = absPaths.find((p) => isInside(root, p) && !allowed.some((d) => isInside(d, p)));
+  return hit ? `${toPosix(hit)} is an installed release (~/services, D-0003): it changes only by checking out a release tag (skill release), never by writing files unless the operator lists it in domain.allow_outside; change the repo in its domain and release it` : null;
+}
+/**
+ * docs/principles/ holds the reasons behind the rules (one file per P-NNN). The short rules in rules/ are what the agent
+ * works by; a reason is read one file at a time. Searching or reading the whole directory poisons the context with
+ * sixty principles to answer one question (operator 2026-11-05).
+ */
+const PRINCIPLES_REF = /([^\s'"=:;|&<>()]*docs[\\/]principles)(?=[\s'"/\\*;|&<>()]|$)(?!\/(?:P-\d{3}|README)\.md(?![\w.-]))/g;
+const DOCS_REF = /([^\s'"=:;|&<>()]*docs)\/?(?=[\s'"*;|&<>()]|$)/g;
+export function principlesBulkRead(tool, toolInput = {}, cwd = process.cwd()) {
+  const text = tool === 'Bash' || tool === 'PowerShell' ? String(toolInput.command || '')
+    : tool === 'Grep' ? `${toolInput.path || ''} ${toolInput.glob || ''}`
+    : tool === 'Glob' ? `${toolInput.pattern || ''} ${toolInput.path || ''}` : '';
+  const home = process.env.HOME || '';
+  // Only a directory that really is a principles dir (holds P-001.md): a project's own docs/principles stays free.
+  const real = [...text.matchAll(PRINCIPLES_REF)].some((m) => {
+    const ref = m[1].startsWith('~/') ? path.join(home, m[1].slice(2)) : m[1];
+    return fs.existsSync(path.join(path.resolve(cwd, ref), 'P-001.md'));
+  });
+  // A search over the parent docs/ walks into principles/ too (git grep x -- docs, grep -r x docs): the same bulk read.
+  const searching = tool === 'Grep' || tool === 'Glob' || /(^|[\s;&|(`])(?:git\s+grep|[ef]?grep|ugrep|rg|ag|ack|find)(?=\s)/.test(text);
+  const viaDocs = searching && [...text.matchAll(DOCS_REF)].some((m) => {
+    const ref = m[1].startsWith('~/') ? path.join(home, m[1].slice(2)) : m[1];
+    return fs.existsSync(path.join(path.resolve(cwd, ref), 'principles', 'P-001.md'));
+  });
+  return real || viaDocs ? 'docs/principles/ is read one principle at a time: the rule in rules/ is the working text, and only when you are unsure why a rule exists you open docs/principles/P-NNN.md for that one rule (P-001); searching or listing the whole directory is not allowed' : null;
+}
+/** The domain marker decides the boundary: no agent changes it (it would widen its own domain). */
+function domainMarkerWrite(ctx, absPaths) {
+  return ctx.domain && absPaths.some((p) => path.resolve(p) === ctx.domain.marker)
+    ? `${toPosix(ctx.domain.marker)} defines the domain boundary; agents do not change it (operator only, D-0002)` : null;
+}
+/** sudo acts outside every domain: only with "sudo" in domain.allow_outside (operator 2026-11-04). */
+function sudoDenied(ctx, command) {
+  if (!ctx.domain || ctx.domain.sudo) return null;
+  return /(^|[\n;&|(`])\s*(\w+=\S*\s+)*sudo(\s|$)/.test(executedText(command))
+    ? `sudo is not allowed in domain ${toPosix(ctx.domain.root)}: it is allowed only by "sudo" in domain.allow_outside of the domain brain policy (D-0002)` : null;
 }
 
 /** Files a shell command edits in place (`sed -i`, `perl -i`), with `cd` tracked like bashTargets. */
@@ -371,7 +500,8 @@ export function topicOwnedCheck(ctx, absPaths) {
   if (!ctx.brainDir || !absPaths.length) return null;
   for (const [rel, topic] of Object.entries(owned)) {
     const root = path.resolve(ctx.projectDir, rel);
-    if (!absPaths.some((p) => isInside(root, p) || isInside(`${root}-topics`, p))) continue;
+    const wt = ctx.domain ? path.join(ctx.domain.root, WORKTREES_DIR, path.basename(root)) : null;
+    if (!absPaths.some((p) => isInside(root, p) || isInside(`${root}-topics`, p) || (wt && isInside(wt, p)))) continue;
     const t = readTopics(ctx.brainDir).find((x) => x.id === topic);
     if (ctx.thread && t?.holder?.thread === ctx.thread) continue;
     const state = !t ? 'not open: open it with workflow:topic' : t.holder?.thread ? `held by thread ${t.holder.thread}` : 'not held: claim it with workflow:topic if this thread is to do the work';
@@ -405,6 +535,14 @@ export function gitWriteDirs(command, cwd = process.cwd()) {
   return dirs;
 }
 
+/** CLAUDE.md is loaded into every session unchecked and goes stale; project knowledge lives in brain (P-007, operator 2026-11-03). */
+export const CLAUDE_MD_REASON = (rel) => `${rel}: CLAUDE.md is loaded into every session unchecked and goes stale (an agent took an outdated address from it); project knowledge goes to brain through workflow:save (memory, decision, rule, skill), the workflow rules come from its SessionStart hook (P-007, P-013). Move a still valid fact into brain; only deleting CLAUDE.md is allowed`;
+function claudeMdWrite(ctx, absPaths) {
+  if (!ctx.brainInfo || ctx.brainInfo.error) return null;
+  const hit = absPaths.find((p) => /^CLAUDE(\.local)?\.md$/i.test(path.basename(p)));
+  return hit ? CLAUDE_MD_REASON(toPosix(path.relative(ctx.projectDir, hit) || hit)) : null;
+}
+
 /** A secret written into the project outside local/ (P-018, P-052; Carol 2026-11-02: tokens stayed in scratch/). */
 function secretOutsideLocal(ctx, absPaths, text) {
   const local = [path.join(ctx.projectDir, 'local'), ctx.brainDir && path.join(ctx.brainDir, 'local')].filter(Boolean);
@@ -416,6 +554,29 @@ function secretOutsideLocal(ctx, absPaths, text) {
   return `a secret (${kind}) would be written to ${toPosix(path.relative(ctx.projectDir, hit[0]) || hit[0])}; secrets go only to ${toPosix(path.join(ctx.projectDir, 'local'))}/ (gitignored, never shared; scratch/ is for work files and may end up in a worker brief or a snapshot), reference them by path (P-018, P-052)`;
 }
 
+// Claude Code's built-in privacy plugin asks the operator when a shell or web call holds the signed-in account email
+// next to a network word (2026-11-04: four operator prompts in one topic). The agent is told first; a repeated
+// identical call passes, so a send the operator asked for still reaches the operator's approval.
+const EMAIL_WEB_TOOLS = ['WebBrowser', 'WebFetch', 'WebSearch'];
+const EMAIL_SHELL_TOOLS = ['Bash', 'Monitor', 'PowerShell', 'Tmux'];
+const EMAIL_NET = /\b(curl|wget|https?|httpie|xh|nc|ncat|socat|telnet|ssh|scp|sftp|rsync|ftp|lftp|rclone|iwr|irm|invoke-webrequest|invoke-restmethod)\b/;
+
+export function accountEmail(env = process.env) {
+  const files = [env.CLAUDE_CONFIG_DIR && path.join(env.CLAUDE_CONFIG_DIR, '.claude.json'), env.HOME && path.join(env.HOME, '.claude.json')].filter(Boolean);
+  for (const f of files) {
+    try { const e = JSON.parse(fs.readFileSync(f, 'utf8')).oauthAccount?.emailAddress; if (e) return String(e).toLowerCase(); } catch { /* next */ }
+  }
+  return '';
+}
+
+export function accountEmailCall(tool, toolInput, email) {
+  if (!email || (!EMAIL_WEB_TOOLS.includes(tool) && !EMAIL_SHELL_TOOLS.includes(tool))) return false;
+  const raw = JSON.stringify(toolInput || {}).toLowerCase();
+  const text = `${raw} ${raw.replace(/%([0-9a-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))}`.toLowerCase();
+  if (!text.includes(email)) return false;
+  return EMAIL_WEB_TOOLS.includes(tool) || EMAIL_NET.test(text.replaceAll(email, ' ').replace(/\\(?:\\|[nrt])/g, ' '));
+}
+
 export function run(input) {
   const ctx = loadContext({ requireBrain: false });
   const tool = input.tool_name;
@@ -425,11 +586,23 @@ export function run(input) {
   const resolve = (p) => path.resolve(cwd, p);
 
   // P-057, P-056: a question tool halts the turn until the operator answers; work never stops (operator 2026-11-03).
-  if (tool === 'AskUserQuestion' && !input.agent_id) return permissionOutput('deny', `AskUserQuestion stops the work until the operator answers, and work never stops (P-057): continue with your recommended option, put the question as text at the end under **Pre teba:** (options, the recommended one first, which one you took), so the operator can override it later (P-056)`);
+  // Exception (operator 2026-11-04): the project wizard asks in a dialog while its window is open, in an operator turn.
+  const wizardDialog = tool === 'AskUserQuestion' && ctx.brainDir && ctx.thread && !isWakeTurn(ctx.brainDir, ctx.thread) && wizardOpen(ctx.brainDir, ctx.thread);
+  if (tool === 'AskUserQuestion' && !input.agent_id && !wizardDialog) return permissionOutput('deny', `AskUserQuestion stops the work until the operator answers, and work never stops (P-057): continue with your recommended option, put the question as text at the end under **Pre teba:** (options, the recommended one first, which one you took), so the operator can override it later (P-056)`);
 
   // P-055: work for another agent goes through mail, never straight into its thread.
   const denied = deniedTool(tool, policy.harness?.denied_tools || []);
   if (denied) return permissionOutput('deny', `${denied} is not used to hand work to another agent: it has no reply path and wakes nobody; send mail (comms send --level blocker|assist --to @<persona>/main or [<project>/]<topic>), the answer comes as --reply-to and wakes you (P-055)`);
+
+  if (ctx.thread && accountEmailCall(tool, toolInput, accountEmail())) {
+    const key = crypto.createHash('sha1').update(JSON.stringify(toolInput)).digest('hex').slice(0, 16);
+    const state = readThreadState(ctx.brainDir, ctx.thread);
+    const seen = Array.isArray(state.email_calls) ? state.email_calls : [];
+    if (!seen.includes(key)) {
+      writeThreadState(ctx.brainDir, ctx.thread, { ...state, email_calls: [...seen, key].slice(-50) });
+      return permissionOutput('deny', `this call holds the operator's account email next to a network word (ssh, http, curl...), so Claude Code's built-in privacy check would ask the operator to approve it; keep the address out of shell and web calls: write file content with Write/Edit, or let the script read the address from a config file or an environment variable. If the operator asked to send it, run the same call again unchanged: the operator then approves it`);
+    }
+  }
 
   // P-057: no foreground waiting; the agent arms a waker and ends the turn.
   if (tool === 'Bash' && !toolInput.run_in_background) {
@@ -463,6 +636,31 @@ export function run(input) {
     return permissionOutput('deny', `a recurring task runs a script, not a prompt that does the work by hand: write the deterministic part (fetch, diff against saved state, write the result) as a script, keep it in a skill (save.mjs skill <name> --script <file>, P-030) and let the prompt run it by absolute path and evaluate its output; lasting results of a persona go to docs/ (save.mjs docs, P-024), state to local/`);
   }
 
+  // P-054: a step refused in this turn (workflow hook, harness permission, operator) is not reached another way.
+  const state = ctx.brainDir && ctx.thread ? readThreadState(ctx.brainDir, ctx.thread) : null;
+  const anchors = [cwd, ctx.projectDir, os.homedir()];
+  const denials = [...(state ? stateDenials(state) : []), ...transcriptDenials(input.transcript_path, state?.turn_started_at || '')];
+  const bypass = denials.length ? bypassOf({ tool, toolInput, cwd, anchors, denials }) : null;
+  if (bypass) return permissionOutput('deny', bypassReason(bypass, cwd));
+
+  const out = pathChecks(input, ctx, cwd);
+  const decision = out?.hookSpecificOutput?.permissionDecision;
+  if (decision === 'deny' && state) {
+    const { paths, write } = analyze(tool, toolInput, cwd, anchors);
+    if (paths.length) writeThreadState(ctx.brainDir, ctx.thread, withDenial(readThreadState(ctx.brainDir, ctx.thread), { key: callKey(tool, toolInput), tool, paths, write, reason: out.hookSpecificOutput.permissionDecisionReason.slice(0, 160) }));
+  }
+  return out;
+}
+
+function pathChecks(input, ctx, cwd) {
+  const tool = input.tool_name;
+  const toolInput = input.tool_input || {};
+  const policy = ctx.policy;
+  const resolve = (p) => path.resolve(cwd, p);
+
+  const bulk = principlesBulkRead(tool, toolInput, cwd);
+  if (bulk) return permissionOutput('deny', bulk);
+
   const target = targetOf(tool, toolInput);
   if (target) {
     const abs = resolve(target);
@@ -471,16 +669,22 @@ export function run(input) {
     const written = [toolInput.content, toolInput.new_string, ...(toolInput.edits || []).map((e) => e.new_string), toolInput.new_source].filter((v) => typeof v === 'string').join('\n');
     const secret = secretOutsideLocal(ctx, [abs], written);
     if (secret) return permissionOutput('deny', secret);
+    const claudeMd = claudeMdWrite(ctx, [abs]);
+    if (claudeMd) return permissionOutput('deny', claudeMd);
     if (ctx.brainDir && isInside(ctx.brainDir, abs) && !personaWritable(ctx, abs)) {
       const persona = ctx.persona ? `; in a persona only ${SCRATCH_DIR}/ and local/ are written directly, outputs belong to the managed projects (P-024)` : '';
-      return permissionOutput('deny', `direct write into brain is not allowed; use workflow:save, topic or finish (P-013, P-040)${persona}`);
+      return permissionOutput('deny', `direct write into brain is not allowed; use workflow:save, topic or done (P-013, P-040)${persona}`);
     }
     // P-052: work files stay in the project; topic copies ../<project>-topics/ are part of the project's work (P-036).
-    if (ctx.brainInfo && !ctx.brainInfo.error && !isInside(ctx.projectDir, abs) && !isInside(topicsDir(ctx.projectDir), abs) && !(ctx.persona && managedProjectOf(ctx.projectDir, abs))) {
-      // A temp file is never a target the operator named: redirect the agent instead of asking the operator (2026-11-02).
-      if (isTempPath(abs)) return permissionOutput('deny', `target ${toPosix(abs)} is in the system temp dir; write work files to ${toPosix(path.join(ctx.projectDir, SCRATCH_DIR))}/ instead (gitignored, no confirmation, P-052)`);
-      return permissionOutput('ask', `target ${toPosix(abs)} is outside the project; work files go to ${toPosix(path.join(ctx.projectDir, SCRATCH_DIR))}/ (gitignored, free to write without asking${ctx.persona ? ', also in a persona brain' : ''}, P-052); write elsewhere only to a target the operator named`);
+    // The agent's environment is its project: a write outside is denied, not asked (operator 2026-11-04: "agents must not
+    // write to top-level directories, their environment is limited to the project").
+    const marker = domainMarkerWrite(ctx, [abs]) || servicesWrite([abs], process.env, outsideAllowed(ctx));
+    if (marker) return permissionOutput('deny', marker);
+    if (boundaryActive(ctx) && !insideProject(ctx, abs)) {
+      return permissionOutput('deny', `target ${outsideReason(ctx, abs)}`);
     }
+    const guard = guardConfigWrite(ctx.projectDir, [abs]);
+    if (guard) return permissionOutput('ask', guard);
     const generatedSkills = /[\\/]\.(claude|agents)[\\/]skills[\\/]/.exec(abs);
     if (tool !== 'NotebookEdit' && generatedSkills && isInside(ctx.projectDir, abs)) {
       return permissionOutput('deny', `.${generatedSkills[1]}/skills/ in the project is generated from brain at session start; edit skills in brain via workflow:save (P-017)`);
@@ -503,7 +707,7 @@ export function run(input) {
     // Decision binding (P-031): one line, once per file per thread.
     if (ctx.brainDir) {
       const rel = isInside(ctx.projectDir, abs) ? toPosix(path.relative(ctx.projectDir, abs)) : toPosix(abs);
-      const matches = findRelatesTo(ctx.brainDir, rel, { validOnly: true }).filter((m) => m.kind === 'decision');
+      const matches = findRelatesTo(ctx.brainDir, rel, { validOnly: true, domain: ctx.domain }).filter((m) => m.kind === 'decision');
       if (matches.length && ctx.thread) {
         const state = readThreadState(ctx.brainDir, ctx.thread);
         const seen = state.signaled_relates || [];
@@ -528,19 +732,38 @@ export function run(input) {
     if (owned) return permissionOutput('deny', owned);
     const secret = secretOutsideLocal(ctx, targets, cmd);
     if (secret) return permissionOutput('deny', secret);
+    const claudeMd = claudeMdWrite(ctx, [...targets, ...edits].filter(() => !/^\s*(git\s+)?rm\s/.test(executedText(cmd))));
+    if (claudeMd) return permissionOutput('deny', claudeMd);
     const asks = policy.harness?.ask_commands || [];
     const normalized = executedText(cmd).replace(/\s+/g, ' ');
     const historyOp = historyOperation(normalized, asks, policy.harness?.ask_commands_except || []);
     if (historyOp && !restoresOnlyOwn(ctx, cmd, cwd)) return permissionOutput('ask', `"${historyOp}" rewrites or drops git history; always needs explicit operator confirmation (P-018)`);
+    const recursive = recursiveModeChange(cmd, cwd, path.join(ctx.projectDir, SCRATCH_DIR));
+    if (recursive) return permissionOutput('ask', `recursive owner/mode change (${recursive.join('; ').slice(0, 160)}) rewrites every file under the target and git does not record it; confirm the exact target with the operator, or name only the files that need it (P-018)`);
     // An untracked file in brain is not brain data (git has none of it): removing such stray output goes through P-018
     // below, not the P-013 deny (Bob 2026-11-01: `rm 0` in the persona root was denied as a brain write). The same holds for
     // ignored files: an old `.scratch/` left by a migration is no brain data and asks instead of a deny (Carol 2026-11-02).
-    const stray = (t) => fs.existsSync(t) && ['untracked', 'ignored by git'].includes(classifyTarget(t).reason);
+    // An empty directory holds no data and git does not track it (alice 2026-11-04: rmdir of an emptied skill dir was denied).
+    const emptyDir = (t) => { try { return fs.statSync(t).isDirectory() && fs.readdirSync(t).length === 0; } catch { return false; } };
+    const stray = (t) => emptyDir(t) || (fs.existsSync(t) && ['untracked', 'ignored by git'].includes(classifyTarget(t).reason));
     if (ctx.brainDir && targets.some((t) => isInside(ctx.brainDir, t) && !personaWritable(ctx, t) && !stray(t))) {
-      return permissionOutput('deny', `shell write into brain is not allowed; use workflow:save, topic or finish (P-013, P-040)`);
+      return permissionOutput('deny', `shell write into brain is not allowed; use workflow:save, topic or done (P-013, P-040)`);
     }
     const created = createdByThread(ctx);
-    const dangerous = targets.filter((t) => !created.has(t) && fs.existsSync(t) && !ownWork(ctx, t) && classifyTarget(t).dangerous);
+    const sudo = sudoDenied(ctx, cmd);
+    if (sudo) return permissionOutput('deny', sudo);
+    const marker = domainMarkerWrite(ctx, [...targets, ...edits, ...shellWrites(cmd, cwd)]) || servicesWrite([...targets, ...edits, ...shellWrites(cmd, cwd)], process.env, outsideAllowed(ctx));
+    if (marker) return permissionOutput('deny', marker);
+    if (boundaryActive(ctx)) {
+      const outside = [...shellWrites(cmd, cwd), ...edits, ...targets].find((t) => !t.startsWith('/dev/') && !insideProject(ctx, t));
+      if (outside) return permissionOutput('deny', `command writes ${outsideReason(ctx, outside)}`);
+    }
+    const guard = guardConfigWrite(ctx.projectDir, [...shellWrites(cmd, cwd), ...edits, ...targets]);
+    if (guard) return permissionOutput('ask', guard);
+    const hookSkip = gitHookBypass(executedText(cmd));
+    if (hookSkip) return permissionOutput('ask', `git with ${hookSkip} runs past the git hooks that guard brain and repos (brain pre-commit, repo checks); the operator confirms it (P-054)`);
+    const isCreated = (t) => created.has(t) || [...created].some((c) => isInside(c, t));
+    const dangerous = targets.filter((t) => !isCreated(t) && fs.existsSync(t) && !ownWork(ctx, t) && classifyTarget(t).dangerous);
     const thr = policy.destructive || {};
     if (targets.length > (thr.files_threshold ?? 5)) {
       return permissionOutput('ask', `operation on ${targets.length} files (> ${thr.files_threshold}); confirm the exact target list with the operator (P-018)`);

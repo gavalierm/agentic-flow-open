@@ -1,6 +1,6 @@
 # Plán implementácie a nasadenia pilotu
 
-Záväzná špecifikácia: `docs/PRINCIPLES.md` (P-001…P-049 a predvolené hodnoty politiky). Tento plán z nej odvodzuje poradie práce. Nič sa nekopíruje zo starej implementácie; workflow vzniká od nuly.
+Záväzná špecifikácia: `docs/principles/` (P-001…P-049 a predvolené hodnoty politiky). Tento plán z nej odvodzuje poradie práce. Nič sa nekopíruje zo starej implementácie; workflow vzniká od nuly.
 
 Repozitáre: `agentic-flow` (tento, plugin `workflow`), `agentic-comms` (pošta a budenie), `example-project-1` (pilotný projekt), `example-project-1-brain` (brain pilotu).
 
@@ -9,7 +9,7 @@ Repozitáre: `agentic-flow` (tento, plugin `workflow`), `agentic-comms` (pošta 
 | Komponent | Princípy | Repo / cesta |
 |---|---|---|
 | Manifest pluginu, README, inštalácia, aktualizácia | P-048, P-014, P-015 | `agentic-flow/.claude-plugin/plugin.json`, `README.md` |
-| Špecifikácia (zdroj pravdy) | všetky | `agentic-flow/docs/PRINCIPLES.md` |
+| Špecifikácia (zdroj pravdy) | všetky | `agentic-flow/docs/principles/` |
 | Jadro pravidiel | P-001, P-002, P-018, P-019, P-020, P-012, P-047 (text), P-022 | `agentic-flow/rules/*.md` |
 | Zostavenie pravidiel z vrstiev, výnimky | P-035, P-022 | `agentic-flow/bin/rules.mjs`, `<brain>/exceptions/`, `<brain>/local/exceptions.md` |
 | Politika a adaptéry | P-015, P-017, P-026 | `agentic-flow/policy/policy.json`, `bin/adapter.mjs`, `adapters/claude`, `adapters/codex` |
@@ -23,7 +23,7 @@ Repozitáre: `agentic-flow` (tento, plugin `workflow`), `agentic-comms` (pošta 
 | Šablóna brain, aktivácia | P-024, P-018, P-039 | `templates/brain/`, `bin/brain-init.mjs` |
 | Indexy a vyhľadávanie | P-039, P-031, P-010 | `bin/index.mjs`, `bin/find.mjs`, `skills/find` |
 | Témy, zabratie, kópia kódu | P-036, P-037, P-045, P-011 | `bin/topic.mjs`, `skills/topic`, `<brain>/topics/<id>/` |
-| Skilly `save`, `error`, `finish`, `consolidate`, `delegate` | P-013, P-007, P-003, P-005, P-006, P-011, P-010, P-027 | `agentic-flow/skills/*` |
+| Skilly `save`, `error`, `done`, `consolidate`, `delegate` | P-013, P-007, P-003, P-005, P-006, P-011, P-010, P-027 | `agentic-flow/skills/*` |
 | Pošta: služba, klient, oznamy, stránka, e-mail | P-041, P-042, P-045, P-046 | `agentic-comms/src/server`, `src/client`, `src/notify` |
 | Triáž a doručenie | P-044, P-047 | `agentic-flow/agents/triage.md`, `skills/comms`, `agentic-comms` klient |
 | Budenie a adaptér `t3` | P-043, P-026 | `agentic-comms/src/wake`, `src/adapters/t3` |
@@ -38,7 +38,7 @@ Poradie je zvolené tak, aby pilot mohol začať čo najskôr: po M0 sa dá over
 ### M0: Kostra a inštalácia (hotové týmto plánom, overí sa pri nasadení)
 
 - Manifest `name: workflow`, `defaultEnabled: false`, bez poľa `version` (verzia = commit sha, zobrazí ju štart, P-048; verzia v manifeste by sa musela ručne zvyšovať a rozchádzala by sa s `git pull`).
-- `hooks/hooks.json` platný a prázdny; `policy/policy.json` s predvolenými hodnotami; `docs/PRINCIPLES.md`.
+- `hooks/hooks.json` platný a prázdny; `policy/policy.json` s predvolenými hodnotami; `docs/principles/`.
 - Hotové, keď: po `git clone` do `~/.claude/skills/workflow` sa plugin zobrazí v `/plugins` a dá sa zapnúť z `example-project-1/.claude/settings.json`; session bez zapnutia ostáva neovplyvnená.
 
 ### M1: Brain (zápis, témy, držiteľ, indexy, vyhľadávanie)
@@ -64,10 +64,10 @@ Poradie je zvolené tak, aby pilot mohol začať čo najskôr: po M0 sa dá over
 
 ### M3: Základné skilly bez pošty a cyklus pracovníka
 
-- Skilly `save` (strom P-007, volá `find`, formát záznamu s `key`, `origin`, `aliases`, `relates_to`; kategórie memory, decision, rule, exception, skill, handover), `error`, `finish` (overenie, `procedures.log`, `derivations.log`, handover → „voľná“, téma `free`, návrh novej session; `--topic`: presun poznatkov, fetch hlavnej vetvy, zlúčenie, archivácia, odstránenie kópie), `consolidate` (subagent vráti návrh, zápis cez `save`), `delegate` (zadanie, pribalenie skillov podľa triggeru, limit výsledku 2 000 znakov, spracovanie „Failures“), `find`, `topic` (SKILL.md nad `bin/topic.mjs`).
+- Skilly `save` (strom P-007, volá `find`, formát záznamu s `key`, `origin`, `aliases`, `relates_to`; kategórie memory, decision, rule, exception, skill, handover), `error`, `done` (overenie, `procedures.log`, `derivations.log`, handover → „voľná“, téma `free`, návrh novej session; `--topic`: presun poznatkov, fetch hlavnej vetvy, zlúčenie, archivácia, odstránenie kópie), `consolidate` (subagent vráti návrh, zápis cez `save`), `delegate` (zadanie, pribalenie skillov podľa triggeru, limit výsledku 2 000 znakov, spracovanie „Failures“), `find`, `topic` (SKILL.md nad `bin/topic.mjs`).
 - `agents/worker.md` (`omitClaudeMd: true`, bez `Skill`, prednačítané skilly), `hooks/post-tool-use.mjs` (`failures.log` s `agent_id`, `sequences.log` s normalizáciou a zoznamom čítacích príkazov, signál pri 3. výskyte, rotácia 30 dní / 7 dní), `hooks/subagent-stop.mjs` (vráti pracovníka bez časti „Failures“).
 - Logy podľa P-030: hooky počas ťahu zbierajú záznamy do `<brain>/local/log-buffer/`, hook Stop ich zapíše jedným volaním `brain.mjs` na ťah.
-- Hotové, keď: v `example-project-1` prebehne celá kódová téma: `topic create` → práca v kópii → `save` rozhodnutia → `finish` (handover, `free`) → `finish --topic` (zlúčené do hlavnej vetvy, téma v `archive/`); pracovník vráti „Failures“; `error` vytvorí skill v `skills/agentic/` s `origin: error`; ručný `Write` do brain je odmietnutý.
+- Hotové, keď: v `example-project-1` prebehne celá kódová téma: `topic create` → práca v kópii → `save` rozhodnutia → `done` (handover, `free`) → `done --topic` (zlúčené do hlavnej vetvy, téma v `archive/`); pracovník vráti „Failures“; `error` vytvorí skill v `skills/agentic/` s `origin: error`; ručný `Write` do brain je odmietnutý.
 
 ### M4: Pošta (`agentic-comms`): služba a klient
 
@@ -81,7 +81,7 @@ Poradie je zvolené tak, aby pilot mohol začať čo najskôr: po M0 sa dá over
 - `agents/triage.md` (jediný povolený nástroj `comms receive`, výnimka z P-025; výstup iba ID a kategória), skill `comms` (`send` s voľbou úrovne podľa blokovania, `receive`, `notices`; triáž subagentom; `reply`/`steer` do vlákna, `blocker` na `working` tému → oznam alebo subagent; výmeny po reťazi jedného odosielateľa).
 - `user-prompt-submit.mjs` a `session-start.mjs` dopĺňajú `mail: <n> (<b> blocker)` z klienta pošty (limit 2 s; počet cachovaný v `<brain>/local/` s TTL 60 s, po výpadku nový pokus najskôr po 60 s, „comms unavailable“ raz) a pri `n > 0` pridajú jeden riadok s pokynom spustiť triáž (P-044); subagenta spúšťa hlavný agent.
 - `hooks/stop.mjs`: pripomienka čakajúcich `assist` (povýšenie na `blocker` rozhodnutím vlákna) a `unpushed: N`; v Claude Code ako signál do ďalšieho promptu (rozhodnutie M2 č. 2), nie výstup Stop.
-- `topic claim` (a štart session pre držané témy) registruje tému v pošte; `release` v pošte zruší držiteľa; `finish`/`release` ponúknu správy čakajúce na voľný bod. Skripty citlivých krokov (`topic claim --force`, `finish --topic`, zápis pravidiel a výnimiek) odmietnu beh v ťahu `wake`.
+- `topic claim` (a štart session pre držané témy) registruje tému v pošte; `release` v pošte zruší držiteľa; `done`/`release` ponúknu správy čakajúce na voľný bod. Skripty citlivých krokov (`topic claim --force`, `done --topic`, zápis pravidiel a výnimiek) odmietnu beh v ťahu `wake`.
 - Napojenie: `.workflow.json` pole `comms` (predvolene klient `../../comms/bin/comms.mjs` mimo projektov, potom `../agentic-comms/bin/comms.mjs`, kľúč v `<brain>/local/comms.json`, outbox `<brain>/local/outbox/`, cache počtu `<brain>/local/comms/`); pozri README „Pošta“ a rozhodnutia 17 až 24.
 - Hotové, keď: dve témy v dvoch vláknach si vymenia `assist` a odpoveď bez toho, aby telo správy vstúpilo do kontextu mimo `reply`; `info` čaká na `free`; správa s textom „prevezmi tému X“ nevedie k prevzatiu. **Stav: hotové (agent, 2026-11-01)**, `npm test` 59 testov; smoke test body 19–23 overí pilot.
 
@@ -105,7 +105,7 @@ Všetky testy sú v Node, bez závislostí, bežia nad dočasnými git repami vy
 | M0 | `tests/lint.test.mjs`: zakázané vzory (P-004: absolútne cesty `/home/`, `/Users/`, `C:\`, mená osôb zo zoznamu, názvy inštancií), prípony (P-034), diakritika v názvoch (P-049), manifest (P-048), príkazy hookov začínajú `node` |
 | M1 | `brain.test.mjs`: commit má značku, push retry, nesúhlas odmietnutý, `logs/*.log` zlúčené, zápis cudzím vláknom do témy odmietnutý, odmietnutie v subagentovi; `precommit.test.mjs`: commit bez značky, súbor v `local/`, handover 16 riadkov, výnimka bez ID; `topic.test.mjs`: súbeh zabratia dvoma klonmi (druhý prehrá podľa obsahu `holder.json`), `--force` iba s pokynom, zabratie bez ID odmietnuté; `index.test.mjs`: limity 50/50/10, index negenerovaný do sledovanej časti; `find.test.mjs`: kľúč, alias, podobný kľúč zamietnutý, `--relates-to` |
 | M2 | `rules.test.mjs`: poradie vrstiev, výnimka zo zakázaného princípu odmietnutá, výpis uplatnených výnimiek, limity; `session-start.test.mjs`: položky hooku (1, 3–7) v poradí, nič navyše, limit 15 000 znakov neprekročený a neorezaný, zdroj `compact` pridá handover, oznam pri chýbajúcom brain, skilly brain skopírované do `.claude/skills/` a priečinok v `.gitignore`; `prompt.test.mjs`: stavový riadok presne 1 riadok, šablóna budenia nastaví príznak `wake`; `adapter-claude.test.mjs`: generovaný `settings.json` zhodný s politikou, `autoMemoryEnabled: false`, žiadny nepôsobiaci kľúč (`permissions.defaultMode`), žiadne symlinky, zhoda mien skillov je chyba; `hooks-json.test.mjs`: každý hook má triedu a limit |
-| M3 | `save.test.mjs`: formát záznamu, `origin`, prepis existujúceho subjektu, odmietnutie druhého záznamu subjektu, kľúč s diakritikou odmietnutý; `finish.test.mjs`: `procedures.log`/`derivations.log` zápis a vyčistenie, handover → „voľná“, `--topic` zlúči a archivuje; `logs.test.mjs`: normalizácia sekvencií, vynechanie čítacích príkazov, signál pri 3. výskyte, rotácia 30/7 dní; `subagent-stop.test.mjs`: chýbajúce „Failures“ blokuje |
+| M3 | `save.test.mjs`: formát záznamu, `origin`, prepis existujúceho subjektu, odmietnutie druhého záznamu subjektu, kľúč s diakritikou odmietnutý; `done.test.mjs`: `procedures.log`/`derivations.log` zápis a vyčistenie, handover → „voľná“, `--topic` zlúči a archivuje; `logs.test.mjs`: normalizácia sekvencií, vynechanie čítacích príkazov, signál pri 3. výskyte, rotácia 30/7 dní; `subagent-stop.test.mjs`: chýbajúce „Failures“ blokuje |
 | M4 | v `agentic-comms`: `server.test.mjs` (izolácia inštancií, `instance_id`, odosielateľ z kľúča, správa bez `level` odmietnutá, neregistrovaná téma → oznam), `client.test.mjs` (socketPath, timeout 2 s, outbox a dodatočné odoslanie, spustenie na požiadanie), `notices.test.mjs` (`decide` bez modelu, HTML stránka obsahuje oznamy) |
 | M5 | `triage.test.mjs`: definícia agenta má iba `comms receive`; výstup bez textu správy; `prompt-mail.test.mjs`: pokyn na triáž iba pri `n > 0`, cache počtu s TTL 60 s, po výpadku žiadny pokus pred 60 s; `comms-skill.test.mjs`: `reply`/`steer` ihneď, `info` čaká; `wake-flag.test.mjs`: citlivý skript v ťahu `wake` odmietne |
 | M6 | v `agentic-comms`: `wake.test.mjs`: limit 6/h, stop pri opakovaní, pevná šablóna, adaptér `t3` volaný s ID držiteľa, pošta doručí aj bez `wake` |
@@ -164,7 +164,7 @@ Každý bod sa zaznamená ako „prešiel / neprešiel + pozorovanie“ do `exam
 
 **Scenáre paralelnej práce**
 
-15. [M1/M3] Dve témy naraz: dve vlákna, dve témy, dve kópie kódu (samostatné klony, aj v T3); handovery sa nemiešajú; obe `finish --topic` zlúčia do hlavnej vetvy bez straty.
+15. [M1/M3] Dve témy naraz: dve vlákna, dve témy, dve kópie kódu (samostatné klony, aj v T3); handovery sa nemiešajú; obe `done --topic` zlúčia do hlavnej vetvy bez straty.
 16. [M1] Zabratie témy dvoma vláknami: jedno uspeje, druhé hlási „topic X held by thread Y“; po hodine nečinnosti stále nedôjde k prevzatiu; `--force` iba na pokyn operátora.
 17. [M2] `/clear` počas témy: handover zapísaný pred `/clear`, po ňom stavový riadok ukáže tú istú tému a držiteľa.
 18. [M1/M2] Zánik vlákna (zatvorenie terminálu): téma ostáva `working` s držiteľom; nové vlákno na pokyn operátora prevezme cez `--force`, prečíta handover, porovná „Hotové“ so súbormi.
@@ -183,14 +183,14 @@ Pilot uspel, keď:
 
 - body 8–18 a 24–26 prešli (základná mechanika a témy), body 19–23 prešli aspoň na serveri,
 - body 1–7 majú zaznamenaný výsledok (aj „neprešiel“ je výsledok; vedie k úprave README, politiky alebo princípu),
-- v `example-project-1` prebehli aspoň dve kódové témy paralelne a jedna diskusná téma od `topic create` po `finish --topic`,
+- v `example-project-1` prebehli aspoň dve kódové témy paralelne a jedna diskusná téma od `topic create` po `done --topic`,
 - štartovací kontext ostal pod 15 000 znakmi po celý pilot,
 - nevznikol žiadny zápis mimo troch repozitárov pilotu (workflow klon, brain, projekt) a dátového priečinka pošty.
 
 Pri zlyhaní:
 
 1. Zaznamenať pozorovanie do `example-project-1/docs/smoke-test.md`.
-2. Ak ide o chybu princípu, upraviť `docs/PRINCIPLES.md` vo vývojovej vetve a dotknutý komponent vytvoriť nanovo (nie záplatou).
+2. Ak ide o chybu princípu, upraviť `docs/principles/P-NNN.md` vo vývojovej vetve a dotknutý komponent vytvoriť nanovo (nie záplatou).
 3. Ak pilot treba zastaviť: `"workflow@skills-dir": false` v `example-project-1`, zastaviť pošty a `wake`. Klon workflow, brain a projekt ostávajú na disku; nič sa nedotkne starého workflow (`legacy-workflow`) ani iných projektov, lebo pilot nezapisuje do globálnych miest harnessu (P-014) a brain pilotu je samostatné repo.
 4. Návrat je vždy možný zmazaním klonu `~/.claude/skills/workflow` (P-048).
 
@@ -213,9 +213,9 @@ Rozpory alebo medzery špecifikácie rozhodnuté pri implementácii najjednoduch
 3. **Detekcia subagenta (P-025).** Skripty spúšťané z Bash subagenta nemajú spoľahlivú premennú; PreToolUse hook (vstup `agent_id`) zamietne Bash so skriptmi brain (`policy.harness.subagent_denied_scripts`). Skripty navyše odmietnu beh pri `WORKFLOW_AGENT_ID` alebo `CLAUDE_AGENT_ID`.
 4. **Deny vzor na brain (P-015).** Dokumentácia Claude Code: pravidlá `Write(path)` sa nikdy nezhodujú, kontroluje sa iba `Edit(path)` (pokrýva Write, MultiEdit, NotebookEdit). Adaptér generuje `Edit(<brainRel>/**)`; `//` absolútne cesty sú zakázané (P-004). Či relatívna `../` cesta pôsobí, overí smoke test 2; PreToolUse hook zamieta zápis do brain deterministicky ako záloha.
 5. **Skilly pracovníka (P-027).** Pole `skills` vo frontmatter agenta je statické. `delegate.mjs prepare` vloží obsah skillov brain so zodpovedajúcim triggerom priamo do zadania (prednačítanie na úrovni promptu). `agents/worker.md` má `omitClaudeMd: true` a `disallowedTools: Skill, Agent`.
-6. **Kópia kódu (P-036).** Klon vzniká z lokálneho checkoutu projektu (`origin` kópie je projekt). `finish --topic` v kópii zlúči aktuálnu vetvu projektu, potom zlúči `topic/<id>` do projektu (`--no-ff`), kópiu zmaže. Ak má projekt `origin`, skúsi pred tým `pull --ff-only`. Netrackované súbory v projekte zlúčeniu nebránia; necommitnuté zmeny sledovaných súborov áno.
+6. **Kópia kódu (P-036).** Klon vzniká z lokálneho checkoutu projektu (`origin` kópie je projekt). `done --topic` v kópii zlúči aktuálnu vetvu projektu, potom zlúči `topic/<id>` do projektu (`--no-ff`), kópiu zmaže. Ak má projekt `origin`, skúsi pred tým `pull --ff-only`. Netrackované súbory v projekte zlúčeniu nebránia; necommitnuté zmeny sledovaných súborov áno.
 7. **`topic create`** zaberie tému hneď a pri `--kind code` založí kópiu (`--no-claim`, `--no-copy` to vypnú).
-8. **`finish` vyžaduje `--verified "<pozorovanie>"`** (P-020): skript overiť nevie, agent zapíše, čo videl.
+8. **`done` vyžaduje `--verified "<pozorovanie>"`** (P-020): skript overiť nevie, agent zapíše, čo videl.
 9. **Hooky v exec forme** (`"command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/…"]`), aby fungovali aj na Windows bez shell quotingu. `PostToolUseFailure` je registrovaný navyše k `PostToolUse`, lebo neúspešný Bash ide tam.
 10. **SubagentStop** blokuje všetkých subagentov okrem vstavaných `Explore`, `Plan` a `triage` (`policy.harness.subagent_stop_exempt_agent_types`), lebo P-028 sa týka pracovníkov.
 11. **Handover po kompakcii** sa pripája k položke 3 (stav vlákna) hneď za stavový riadok.
@@ -235,7 +235,7 @@ Agent, 2026-11-01, najjednoduchší variant v duchu princípov:
 20. **Výpadok v stavovom riadku.** Posledný známy počet ostáva, `(comms unavailable)` sa pripojí iba pri prvom zlyhaní okna (`first_report` klienta), ďalší pokus najskôr po 60 s. Neznámy počet je `mail: ?`. Chybná konfigurácia (klient na zadanej ceste neexistuje) sa ukazuje stále, lebo je to chyba nastavenia, nie udalosť.
 21. **Pripomienka `assist` (P-042)** je lokálna: `comms.mjs send --level assist` zapíše ID do `waiting_assist` v stave vlákna, `receive` ho vymaže pri odpovedi (`reply_to`), hook Stop pri neprázdnom zozname zaradí signál „pending assist: N“ do ďalšieho promptu (podľa rozhodnutia 2 Stop nevypisuje). Povýšenie je nová správa `blocker` do tej istej témy.
 22. **Triáž (P-044, P-025).** Agent `triage` má jediný nástroj `Bash` a `omitClaudeMd`; deterministické vynútenie dáva hook PreToolUse (v subagentovi z `comms.mjs` iba `receive|list|count`; pri `agent_type` triáže nič iné než klient) a hook SubagentStop (výstup iba riadky `<ID> <kategória>` alebo `none`, inak vráti). Hlavný agent číta telo iba cez `receive --id` po triáži; `list` text nikdy nevypíše. Pošta sama kategórie nepozná; `blocker` na pracujúcu tému rieši text skillu (oznam v pošte už existuje, M4 rozhodnutie 2).
-23. **Registrácia témy** pri `claim`/`create` (s držiteľom), pri štarte session pre držané témy (iba ak pošta odpovedala) a pri `release` bez držiteľa (budenie nevolá vlákno, ktoré tému pustilo). `finish` a `release` po uvoľnení vypíšu „mail: n waiting (free point)“, ak téma má čakajúce správy; nič sa nevkladá do kontextu.
+23. **Registrácia témy** pri `claim`/`create` (s držiteľom), pri štarte session pre držané témy (iba ak pošta odpovedala) a pri `release` bez držiteľa (budenie nevolá vlákno, ktoré tému pustilo). `done` a `release` po uvoľnení vypíšu „mail: n waiting (free point)“, ak téma má čakajúce správy; nič sa nevkladá do kontextu.
 24. **Testy pošty** spúšťajú dočasnú inštanciu `agentic-comms` ako detský proces (klient `../agentic-comms` vedľa klonu pluginu alebo `AGENTIC_COMMS_DIR`, `autostart: false`, aby výpadok zlyhal okamžite); bez repa sa preskočia.
 
 ## Rozhodnutia pri implementácii (M7)
@@ -275,4 +275,4 @@ Agent, 2026-11-01. Codex na stroji nie je nainštalovaný; formáty overené v o
 
 ## Rozhodnutia k medzerám z plánovania
 
-Medzery a rozpory zistené pri plánovaní (triáž a pošta subagenta, zapnutie na úrovni sedenia, kópia kódu v T3, zápis logov, skilly brain v projekte, spúšťanie triáže, e-mail notifikácia, pre-commit brain, kontrola poradia štartu, deny vzor na brain, cache stavového riadku) rozhodol operátor 2026-11-01. Rozhodnutia sú zapísané normatívne priamo v princípoch P-014, P-015, P-017, P-021, P-024, P-025, P-030, P-032, P-036, P-040, P-041, P-044, P-046, P-048 a v predvolených hodnotách politiky v `docs/PRINCIPLES.md`. Tento plán ich preberá v M1 až M5.
+Medzery a rozpory zistené pri plánovaní (triáž a pošta subagenta, zapnutie na úrovni sedenia, kópia kódu v T3, zápis logov, skilly brain v projekte, spúšťanie triáže, e-mail notifikácia, pre-commit brain, kontrola poradia štartu, deny vzor na brain, cache stavového riadku) rozhodol operátor 2026-11-01. Rozhodnutia sú zapísané normatívne priamo v princípoch P-014, P-015, P-017, P-021, P-024, P-025, P-030, P-032, P-036, P-040, P-041, P-044, P-046, P-048 a v predvolených hodnotách politiky v `docs/principles/`. Tento plán ich preberá v M1 až M5.

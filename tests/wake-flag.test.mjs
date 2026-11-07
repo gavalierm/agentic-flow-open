@@ -19,7 +19,7 @@ test('sensitive scripts refuse in a wake turn and work again after an operator p
     assert.match(takeover.out, /P-047/);
     assert.match(fx.read('topics/beta/holder.json'), /b2/, 'holder unchanged');
 
-    const close = fx.run('finish.mjs', ['--topic', '--verified', 'seen']);
+    const close = fx.run('done.mjs', ['--topic', '--verified', 'seen']);
     assert.notEqual(close.status, 0);
     assert.match(close.out, /P-047/);
     assert.ok(fx.exists('topics/alpha/topic.json'), 'topic not archived');
@@ -35,12 +35,12 @@ test('sensitive scripts refuse in a wake turn and work again after an operator p
     assert.notEqual(create.status, 0);
     assert.match(create.out, /P-047/);
 
-    // Reading, answering and acking stay allowed in a wake turn: finish of a unit (no --topic) is not sensitive.
-    assert.equal(fx.run('finish.mjs', ['--verified', 'seen']).status, 0);
+    // Reading, answering and acking stay allowed in a wake turn: done of a unit (no --topic) is not sensitive.
+    assert.equal(fx.run('done.mjs', ['--verified', 'seen']).status, 0);
 
     // Operator prompt resets the flag.
     fx.hook('user-prompt-submit.mjs', { prompt: 'uzavri tému' });
-    const closed = fx.run('finish.mjs', ['--topic', '--verified', 'seen']);
+    const closed = fx.run('done.mjs', ['--topic', '--verified', 'seen']);
     assert.equal(closed.status, 0, closed.out);
     assert.ok(fx.exists('topics/archive/alpha/topic.json'));
   } finally { fx.cleanup(); }

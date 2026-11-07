@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 // Boot sequence (P-021, P-022, P-024, P-026, P-038): items 1, 3-7 composed by the SessionStart hook.
+import fs from 'node:fs';
 import path from 'node:path';
 import { PLUGIN_ROOT, shortSha, git } from './util.mjs';
 import { WORKFLOW_CONFIG, readThreadState, writeThreadState } from './config.mjs';
@@ -69,7 +70,7 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
   let status = info.line;
   const mailLine = mailNoticeLine(info.mail);
   if (mailLine) status += `\n${mailLine}`;
-  if (ctx.thread) status += `\n${statusBlockInstruction(operatorStatus(ctx, info), !info.held.length)}`;
+  if (ctx.thread) status += `\n${statusBlockInstruction(operatorStatus(ctx, info), !info.held.length, ctx.projectName)}`;
   if (ctx.brainDir && ctx.thread) {
     const state = readThreadState(ctx.brainDir, ctx.thread);
     writeThreadState(ctx.brainDir, ctx.thread, { ...state, turn_source: 'operator', session_source: source, mail_signaled: info.mail.count, last_status: info.line, rules_hash: includeRules ? rulesHash(rules.text) : state.rules_hash ?? null });
@@ -90,6 +91,9 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
     indexes = buildIndexes(ctx.brainDir, ctx.policy);
     topics = heldTopicsAll(ctx);
     notices.push(...indexes.warnings.map((w) => `limit: ${w}`));
+    // CLAUDE.md is loaded unchecked into every session and goes stale; its knowledge belongs in brain (P-007, operator 2026-11-03).
+    const stray = ['CLAUDE.md', 'CLAUDE.local.md'].filter((f) => fs.existsSync(path.join(ctx.projectDir, f)));
+    if (stray.length) notices.push(`${stray.join(', ')} in the project: loaded into every session unchecked, so it goes stale; move what is still valid into brain (workflow:save) and delete it (git rm), after the current unit of work (P-007)`);
   }
   parts.push(`${BOOT_MARKERS[2]}\n${indexes.text.memory.trim() || '(prázdny)'}`);
   parts.push(`${BOOT_MARKERS[3]}\n${indexes.text.decisions.trim() || '(prázdny)'}`);
@@ -125,10 +129,11 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
 /** Status block shown to the operator at start (P-050): topic, free topics and the question when none is held, waiting mail. */
 export function operatorStatus(ctx, info) {
   const lines = [];
+  // The project leads the line (operator 2026-11-04: "skarper-web / bez témy", "skarper-web / <téma>").
   if (info.held.length) {
-    lines.push(`Téma: ${info.held[0].id}`);
+    lines.push(`${ctx.projectName} / ${info.held[0].id}`);
   } else {
-    lines.push('Téma: žiadna', '', 'Dostupné témy:');
+    lines.push(`${ctx.projectName} / bez témy`, '', 'Dostupné témy:');
     const free = freeTopics(ctx);
     lines.push(...(free.length ? free.map((t) => `- ${t.id}${t.subject && t.subject !== t.id ? ` – ${t.subject}` : ''}`) : ['- žiadne']));
     lines.push('', 'Aká bude téma?');
@@ -145,10 +150,10 @@ function freeTopics(ctx) {
  * T3-WORKAROUND(hook-message-hidden) The harness UI (T3) does not show hook messages, so the agent shows the block (P-050): verbatim, as the start of its
  * first reply only; without a held topic the operator's answer to the question decides the topic.
  */
-export function statusBlockInstruction(block, unknown = false) {
+export function statusBlockInstruction(block, unknown = false, project = '<project>') {
   const n = block.split('\n').length;
   // The question is only for an unknown topic: a prompt that names the topic (claimed before the reply) is not asked again.
-  const known = unknown ? `\nThis block is only for a topic that stays unknown. If the operator's prompt names the topic and you claim it (skill workflow:topic) before your first reply, start that reply instead with \`Téma: <id>\` (and the \`Pošta:\` line if shown above), without the list and without \`Aká bude téma?\`; asking for a topic that is known is wrong (P-050).` : '';
+  const known = unknown ? `\nThis block is only for a topic that stays unknown. If the operator's prompt names the topic and you claim it (skill workflow:topic) before your first reply, start that reply instead with \`${project} / <id>\` (and the \`Pošta:\` line if shown above), without the list and without \`Aká bude téma?\`; asking for a topic that is known is wrong (P-050).` : '';
   return `status block (P-050): your first reply in this session MUST start with exactly the next ${n} lines, verbatim, before anything else (no tags, no code fence)${unknown ? ', unless the topic is known (below)' : ''}; later replies MUST NOT repeat them:\n${block}\n(end of status block)${known}`;
 }
 

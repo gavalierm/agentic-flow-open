@@ -99,10 +99,22 @@ export function inPlaceEdits(words) {
 // after was changed by this command, so it is the thread's own edit like an Edit or `sed -i` (alice 2026-11-03:
 // edits by a python heredoc were not own and the later `git restore` asked the operator, P-018).
 const SHELL_LIMIT = 20;
+const CREATED_LIMIT = 500; // same cap as created_files in pre-tool-use
 
 function dirtyTracked(top) {
   const r = git(['diff', '--name-only', 'HEAD'], { cwd: top });
   return r.ok ? r.stdout.split('\n').filter(Boolean).map((rel) => path.resolve(top, rel)) : null;
+}
+
+/**
+ * Untracked and ignored entries of a repo (a wholly new directory collapsed to one entry). An entry that appears during
+ * a shell command was made by it, also as a program's side effect (`wrangler deploy` makes `.wrangler/`), so removing
+ * it later is cleaning up after itself (alice 2026-11-04: `rm -rf .wrangler` after a dry-run asked the operator, P-018).
+ */
+function strayEntries(top) {
+  const r = git(['status', '--porcelain', '--ignored', '-z'], { cwd: top });
+  if (!r.ok) return null;
+  return r.stdout.split('\0').filter((e) => /^(\?\?|!!) /.test(e)).map((e) => path.resolve(top, e.slice(3).replace(/\/$/, '')));
 }
 
 /** PreToolUse (shell): remember the dirty tracked files of each repo under dirs, keyed by the tool call. */
@@ -111,12 +123,14 @@ export function snapshotShell(ctx, id, dirs) {
   if (!edits || !id) return;
   const tops = [...new Set(dirs.map((d) => fs.existsSync(d) && git(['rev-parse', '--show-toplevel'], { cwd: d })).filter((r) => r && r.ok).map((r) => r.stdout))];
   const dirty = {};
+  const strays = [];
   for (const top of tops) {
     for (const abs of dirtyTracked(top) || []) dirty[abs] = { h: fileHash(abs), own: ownedEdit(ctx, abs) };
+    strays.push(...(strayEntries(top) || []));
   }
   const state = readThreadState(ctx.brainDir, ctx.thread);
   const before = Object.entries(state.shell_before || {}).slice(-(SHELL_LIMIT - 1));
-  writeThreadState(ctx.brainDir, ctx.thread, { ...state, shell_before: { ...Object.fromEntries(before), [id]: { tops, dirty } } });
+  writeThreadState(ctx.brainDir, ctx.thread, { ...state, shell_before: { ...Object.fromEntries(before), [id]: { tops, dirty, strays } } });
 }
 
 /** PostToolUse (shell): files the command changed from clean, or changed further while own, become own edits. */
@@ -133,7 +147,10 @@ export function settleShell(ctx, id) {
       if (h && (!was || (was.own && was.h !== h))) edits[abs] = h;
     }
   }
+  const had = new Set(snap.strays || []);
+  const born = snap.strays ? snap.tops.flatMap((top) => strayEntries(top) || []).filter((abs) => !had.has(abs) && !inWorkScratch(abs)) : [];
+  const created = [...(state.created_files || []).filter((f) => !born.includes(f)), ...born].slice(-CREATED_LIMIT);
   const { [id]: _, ...rest } = state.shell_before;
-  writeThreadState(ctx.brainDir, ctx.thread, { ...state, shell_before: rest });
+  writeThreadState(ctx.brainDir, ctx.thread, { ...state, shell_before: rest, created_files: created });
   saveOwnEdits(ctx, edits);
 }

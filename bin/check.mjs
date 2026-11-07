@@ -7,16 +7,19 @@
 import { parseArgs, fail, shortSha, git, PLUGIN_ROOT } from '../scripts/util.mjs';
 import { loadContext } from '../scripts/config.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
-import { updateClone } from '../scripts/update.mjs';
+import { updateClone, pinClone } from '../scripts/update.mjs';
 
 const args = parseArgs(process.argv.slice(2));
 const loaded = typeof args.loaded === 'string' ? args.loaded.trim() : '';
 if (!loaded) fail('usage: check.mjs --loaded <sha from the boot line "workflow <sha>">');
 
 const out = (s) => process.stdout.write(s + '\n');
-const up = updateClone(PLUGIN_ROOT);
-if (up.status === 'updated') out(`updated: workflow ${up.from} -> ${up.to}`);
-else if (up.status === 'current') out(`release ${up.to} is the newest`);
+// A brain pinned to a release (policy workflow_version, P-040) keeps every machine on it: no update past the pin.
+let pin = null;
+try { pin = loadContext({ requireBrain: false }).policy?.workflow_version || null; } catch { /* no context: newest release */ }
+const up = pin ? pinClone(PLUGIN_ROOT, pin) : updateClone(PLUGIN_ROOT);
+if (up.status === 'updated') out(`updated: workflow ${up.from} -> ${up.to}${pin ? ' (brain policy workflow_version)' : ''}`);
+else if (up.status === 'current') out(pin ? `release ${up.to} is the version pinned by the brain policy (workflow_version)` : `release ${up.to} is the newest`);
 else out(`not updated: ${up.reason}${up.status === 'failed' ? ' (report it with the output)' : ''}`);
 const installed = shortSha(PLUGIN_ROOT);
 const tag = git(['describe', '--tags', '--exact-match'], { cwd: PLUGIN_ROOT }).stdout || 'untagged';

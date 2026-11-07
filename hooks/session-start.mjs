@@ -7,6 +7,9 @@ import { buildBootContext } from '../scripts/boot.mjs';
 import { readThreadState, writeThreadState } from '../scripts/config.mjs';
 import { installedWorkflow } from '../scripts/update-notice.mjs';
 import { handleT3Session } from '../scripts/t3-clear.mjs';
+import { brainPull, brainPullNote } from '../scripts/brain.mjs';
+import { pinClone } from '../scripts/update.mjs';
+import { PLUGIN_ROOT } from '../scripts/util.mjs';
 
 export const HOOK_META = { event: 'SessionStart', class: 'boot', limit: '15000 chars', principles: ['P-021', 'P-022', 'P-024', 'P-026', 'P-038', 'P-050'] };
 
@@ -18,12 +21,37 @@ export function run(input) {
     return contextOutput('SessionStart', `## Workflow\nworkflow: cannot load context (${err.message})`);
   }
   exportProjectDir(ctx.projectDir);
-  const boot = buildBootContext(ctx, { source: input.source || 'startup', t3Note: t3Session(ctx, input) });
+  // Several machines on one brain (P-040): pull first, so rules, indexes and holders of the boot are current.
+  const pull = pullBrain(ctx);
+  if (pull?.pulled) {
+    try { ctx = loadContext({ project: ctx.projectDir, requireBrain: false }); } catch { /* keep the context loaded before the pull */ }
+  }
+  const notes = [brainPullNote(pull), pinWorkflow(ctx), t3Session(ctx, input)].filter(Boolean);
+  const boot = buildBootContext(ctx, { source: input.source || 'startup', t3Note: notes.length ? notes.join('\n') : null });
   // P-021: the revision this session loaded; the prompt and tool hooks announce a later update once.
   if (ctx.brainDir && ctx.thread) {
     try { const w = installedWorkflow(); writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), plugin_sha: w.sha, plugin_version: w.version }); } catch { /* state is best effort */ }
   }
   return contextOutput('SessionStart', boot.text);
+}
+
+export function pullBrain(ctx) {
+  if (!ctx.brainDir) return null;
+  try { return brainPull(ctx.brainDir); } catch (err) { return { pulled: 0, behind: 0, reason: null, error: err.message }; }
+}
+
+/**
+ * Brain policy `workflow_version` (P-040): this machine runs the release the brain is pinned to. Only a clean release
+ * install is switched; this session's hooks were already loaded, so the switch takes full effect in the next session.
+ */
+export function pinWorkflow(ctx, root = PLUGIN_ROOT) {
+  const want = ctx.policy?.workflow_version;
+  if (!want) return null;
+  let r;
+  try { r = pinClone(root, want); } catch (err) { r = { status: 'failed', reason: err.message }; }
+  if (r.status === 'updated') return `workflow switched ${r.from} -> ${r.to} per brain policy workflow_version; this session started on ${r.from}: hooks and skills load fully in the next session (tell the operator) (P-040)`;
+  if (r.status === 'failed' || (r.status === 'skipped' && !r.dev)) return `workflow not switched to ${r.to || want} (brain policy workflow_version): ${r.reason}`;
+  return null;
 }
 
 /** T3-WORKAROUND(t3-clear-cursor) T3 /clear workaround (t3code#24152): record T3's resume cursor, redirect it to the new session on clear. */

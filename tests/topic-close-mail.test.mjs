@@ -1,4 +1,4 @@
-// alice 2026-11-02: finish --topic closes the topic in the mail service (new mail 410, waiting mail bounces to the sender);
+// alice 2026-11-02: done --topic closes the topic in the mail service (new mail 410, waiting mail bounces to the sender);
 // a thread that also holds main is not archived; archived topics from before are closed at the next session start.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -8,7 +8,7 @@ import { setup, startComms, commsClient } from './helpers.mjs';
 
 const skip = commsClient() ? false : 'agentic-comms not found next to the plugin (AGENTIC_COMMS_DIR)';
 
-test('finish --topic closes the topic in the mail: waiting mail bounces, new mail is refused at once with the closing time', { skip }, async () => {
+test('done --topic closes the topic in the mail: waiting mail bounces, new mail is refused at once with the closing time', { skip }, async () => {
   const fx = setup({ second: true });
   const comms = await startComms(fx, { senders: ['alice', 'bob'], brains: [[fx.project, fx.brain, 'alice'], [fx.projectB, fx.brainB, 'bob']] });
   try {
@@ -17,13 +17,13 @@ test('finish --topic closes the topic in the mail: waiting mail bounces, new mai
     const send = fx.runB('comms.mjs', ['send', '--level', 'assist', '--to', 'project/gamma', '--text', 'units?']);
     assert.equal(send.status, 0, send.out);
     const id = /sent (\S+) \(assist\)/.exec(send.stdout)?.[1];
-    // The finishing thread also holds main: the topic is closed, the thread is not archived (P-045).
+    // The closing thread also holds main: the topic is closed, the thread is not archived (P-045).
     const main = path.join(fx.brain, 'topics', 'main');
     fs.mkdirSync(main, { recursive: true });
     fs.writeFileSync(path.join(main, 'topic.json'), JSON.stringify({ id: 'main', subject: 'Main', kind: 'main', state: 'working' }) + '\n');
     fs.writeFileSync(path.join(main, 'holder.json'), JSON.stringify({ thread: 'a1', mode: 'operator' }) + '\n');
     fx.git(fx.brain, 'add', '-A'); fx.git(fx.brain, 'commit', '-q', '--no-verify', '-m', 'main held by a1 (test)');
-    const fin = fx.run('finish.mjs', ['--topic', '--topic-id', 'gamma', '--verified', 'done'], { env: { T3CODE_THREAD_ID: 'a1' } });
+    const fin = fx.run('done.mjs', ['--topic', '--topic-id', 'gamma', '--verified', 'done'], { env: { T3CODE_THREAD_ID: 'a1' } });
     assert.equal(fin.status, 0, fin.out);
     assert.match(fin.stdout, /mail: topic gamma closed in the mail service/);
     assert.match(fin.stdout, /holds the persona main topic, so it stays open: do not archive it/);

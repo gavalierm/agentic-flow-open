@@ -7,11 +7,12 @@ import path from 'node:path';
 import { git, readText } from '../scripts/util.mjs';
 import { BRAIN_COMMIT_TAG, BRAIN_SCRIPT_ENV, loadPolicy } from '../scripts/config.mjs';
 import { checkBrainFile } from '../scripts/brain-checks.mjs';
+import { parseFrontmatter } from '../scripts/frontmatter.mjs';
 
 export function checkStaged(brainDir, { env = process.env } = {}) {
   const errors = [];
   if (env[BRAIN_SCRIPT_ENV] !== '1') {
-    errors.push(`commit not made by the brain script (P-040); write through save/topic/finish, or as operator: git commit --no-verify`);
+    errors.push(`commit not made by the brain script (P-040); write through save/topic/done, or as operator: git commit --no-verify`);
   }
   const policy = loadPolicy(brainDir);
   const staged = git(['diff', '--cached', '--name-only', '--diff-filter=ACMR'], { cwd: brainDir }).stdout.split('\n').filter(Boolean);
@@ -22,7 +23,10 @@ export function checkStaged(brainDir, { env = process.env } = {}) {
   }
   const removed = git(['diff', '--cached', '--name-only', '--diff-filter=D'], { cwd: brainDir }).stdout.split('\n').filter(Boolean);
   for (const rel of removed) {
-    if (/^decisions\/[^/]+\.md$/.test(rel)) errors.push(`${rel}: decisions are never deleted, only superseded (P-008)`);
+    if (!/^decisions\/[^/]+\.md$/.test(rel)) continue;
+    // A file without a record key is not a workflow decision (README, older format replaced when a brain is adopted).
+    const before = git(['show', `HEAD:${rel}`], { cwd: brainDir });
+    if (!before.ok || parseFrontmatter(before.stdout).data?.key) errors.push(`${rel}: decisions are never deleted, only superseded (P-008)`);
   }
   return errors;
 }

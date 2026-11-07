@@ -5,7 +5,7 @@
 //   error.mjs resolve <n>               -> remove failure line n after the lesson was saved
 import { parseArgs, fail } from '../scripts/util.mjs';
 import { loadContext } from '../scripts/config.mjs';
-import { listFailures } from '../scripts/logs.mjs';
+import { listFailures, resolveFailureOp } from '../scripts/logs.mjs';
 import { find, formatMatches } from '../scripts/find.mjs';
 import { readSkills } from '../scripts/records.mjs';
 import { tokens } from '../scripts/keys.mjs';
@@ -38,11 +38,9 @@ try {
     out(maintainer ? 'this thread holds workflow-dev: do not mail the report to yourself; fix the error here (skill fix) (P-003)' : REPORT_LINE);
   } else if (cmd === 'resolve') {
     const n = Number(arg);
-    const lines = listFailures(ctx.brainDir);
-    if (!n || !lines[n - 1]) fail(`no failure line ${arg}`);
-    const keep = lines.filter((_, i) => i !== n - 1);
-    brainWrite(ctx, { internal: true, ops: [{ path: 'logs/failures.log', content: keep.length ? keep.join('\n') + '\n' : '' }], message: `error: failure ${n} processed` });
-    out(`failure ${n} processed; remaining ${keep.length}`);
+    const r = resolveFailureOp(ctx.brainDir, n);
+    brainWrite(ctx, { internal: true, ops: [r.op], message: `error: failure ${n} processed` });
+    out(`failure ${n} processed; remaining ${r.remaining}`);
   } else {
     fail('usage: error.mjs list | check <tool> | resolve <n>');
   }

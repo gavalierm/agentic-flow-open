@@ -1,6 +1,6 @@
 # Brain
 
-Dáta workflow pre jeden projekt (P-024). Zapisujú sem iba skripty workflow (`save`, `topic`, `finish`, hooky logov) cez `brain.mjs`; ručný zápis odmietne pre-commit hook (P-040).
+Dáta workflow pre jeden projekt (P-024). Zapisujú sem iba skripty workflow (`save`, `topic`, `done`, hooky logov) cez `brain.mjs`; ručný zápis odmietne pre-commit hook (P-040).
 
 - `memory/`, `decisions/`, `rules/`: jedna vec = jeden súbor s frontmatter `key` (P-031, P-039).
 - `skills/operator/` (skilly operátora), `skills/agentic/` (skilly agenta, `origin: error | routine`, P-032).

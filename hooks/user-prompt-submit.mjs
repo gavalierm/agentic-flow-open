@@ -7,7 +7,8 @@ import { readHookInput, emit, contextOutput, isMain, enforceLines } from '../scr
 import { loadContext, readThreadState, writeThreadState } from '../scripts/config.mjs';
 import { statusInfo, rulesHash, BOOT_MARKERS } from '../scripts/boot.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
-import { recordTurn, runClient, mailNoticeLine } from '../scripts/comms.mjs';
+import { recordTurn, runClient, mailNoticeLine, isMainTopic } from '../scripts/comms.mjs';
+import { waitOnlyStep } from '../scripts/waker.mjs';
 import { threadTitleSignal } from '../scripts/thread-title.mjs';
 import { updateNotice } from '../scripts/update-notice.mjs';
 
@@ -37,9 +38,9 @@ export function parsePrompt(prompt, policy) {
   const low = p.toLowerCase();
   // A bare nudge („up“, „?“, „check“) is the operator waking the thread to work, not asking for a report.
   if ((cfg.nudge_prompts || []).some((n) => low === String(n).toLowerCase())) return { kind: 'nudge' };
-  // Operator 2026-11-03: "finish" from the operator closes the whole topic; an agent ran only the unit finish.
+  // Operator 2026-11-03: "done" from the operator closes the whole topic; an agent closed only the unit.
   const bare = low.replace(/[\s.!]+$/, '').trim();
-  if ((cfg.finish_prompts || []).some((f) => bare === String(f).toLowerCase() || bare.startsWith('/workflow:finish'))) return { kind: 'finish' };
+  if ((cfg.done_prompts || []).some((f) => bare === String(f).toLowerCase() || bare.startsWith('/workflow:done'))) return { kind: 'done' };
   if ((cfg.error_phrases || []).some((f) => low.includes(f.toLowerCase()))) return { kind: 'error' };
   if ((cfg.save_phrases || []).some((f) => low.includes(f.toLowerCase()))) return { kind: 'save' };
   return { kind: null };
@@ -116,13 +117,21 @@ export function run(input) {
   }
   // P-057: the thread timer fired (the wake module rang at resume_at): its step comes first; the timer is spent.
   const timer = state?.timer && Date.parse(state.timer.at) <= Date.now() + 90_000 ? state.timer : null;
-  if (kind === 'continue' && timer) extras.unshift(`timer fired (set ${timer.set_at}): ${timer.then}; do it now, the work never stops (P-057)`);
+  // A paused topic (snooze): its end rings the thread once; an operator prompt with work on it resumes it.
+  const paused = (info.held || []).find((t) => t.state === 'paused');
+  const snoozeEnded = paused && kind === 'continue' && !timer && paused.paused_until && Date.parse(paused.paused_until) <= Date.now() + 90_000;
+  const idle = (info.held || []).find((t) => !isMainTopic(t) && t.state !== 'paused' && waitOnlyStep(t.next));
+  if (paused && !snoozeEnded && !BELLS.includes(kind)) extras.push(`topic ${paused.id} is paused${paused.paused_until ? ` until ${paused.paused_until}` : ''}: work the operator gives on it starts with topic.mjs resume ${paused.id}`);
+  if (snoozeEnded) extras.unshift(`pause of topic ${paused.id} ended: run topic.mjs resume ${paused.id}, then continue from handover (P-026)`);
+  else if (kind === 'continue' && timer) extras.unshift(`timer fired (set ${timer.set_at}): ${timer.then}; do it now, the work never stops (P-057)`);
+  else if (kind === 'continue' && paused && !idle && !(info.held || []).some((t) => !isMainTopic(t) && t.state !== 'paused' && t.next)) extras.unshift(`topic ${paused.id} is still paused${paused.paused_until ? ` until ${paused.paused_until}` : ''}: nothing to do, end the turn without any text (P-060)`);
+  else if (kind === 'continue' && idle) extras.unshift(`idle check: the next step of topic ${idle.id} only waits ("${waitOnlyStep(idle.next)}"): check whether it happened (mail, topic state); if nothing changed, end the turn without any text (P-060)`);
   else if (kind === 'continue') extras.unshift('turn ended with a next step in the handover: do that step now (P-026); stop only with a verified waker (P-057)');
   if (kind === 'nudge') extras.unshift('operator nudge: the operator wakes you to work, not for a report. Handle mail first (the mail lines; skill workflow:comms), then do the next step of the handover and continue the work of the topic (P-026)');
   if (kind === 'keepalive') extras.unshift('turn resumed after interruption (server restart): continue the interrupted work from your context/handover');
   else if (kind === 'error') extras.unshift('error reported: use skill workflow:error (P-003)');
   else if (kind === 'save') extras.unshift('save requested: use skill workflow:save (P-013)');
-  else if (kind === 'finish') extras.unshift('finish requested by the operator: close the whole held topic (finish --topic, skill workflow:finish), not only the unit of work; topic main and a thread without a topic close the unit');
+  else if (kind === 'done') extras.unshift('done requested by the operator: close the whole held topic (done --topic, skill workflow:done), not only the unit of work; topic main and a thread without a topic close the unit');
   // Mail lines once per change of the waiting count (P-044, P-023 c); a wake turn already carries them.
   const signaled = state?.mail_signaled ?? 0;
   // A no-reply/undelivered turn does not show the mail: the lines wait for the next prompt (mail_signaled unchanged).

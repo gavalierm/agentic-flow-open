@@ -80,7 +80,8 @@
     "default_holder_mode": "operator",
     "thread_start_command": "t3 thread start --json",
     "brain_path_default": "../<brain-name>",
-    "code_copy_path": "../<project>-topics/<id>/"
+    "code_copy_path": "../<project>-topics/<id>/",
+    "stale_machine_hours": 12
   },
   "subagents": {
     "default_model": "haiku",
@@ -115,14 +116,16 @@
       "~/.claude/**"
     ],
     "denied_tools": [
-      "t3_thread_send"
+      "t3_thread_send",
+      "EnterWorktree"
     ],
     "subagent_denied_scripts": [
       "bin/brain.mjs",
       "bin/save.mjs",
       "bin/topic.mjs",
-      "bin/finish.mjs",
-      "bin/brain-init.mjs"
+      "bin/done.mjs",
+      "bin/brain-init.mjs",
+      "bin/project.mjs"
     ],
     "subagent_stop_exempt_agent_types": [
       "Explore",
@@ -160,7 +163,7 @@
       "broken",
       "wrong"
     ],
-    "finish_prompts": ["finish", "hotovo", "uzavri to", "uzavri", "uzavri tému", "done", "workflow:finish"],
+    "done_prompts": ["finish", "hotovo", "uzavri to", "uzavri", "uzavri tému", "done", "workflow:done"],
     "save_phrases": [
       "ulož",
       "zapamätaj",

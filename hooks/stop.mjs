@@ -19,13 +19,18 @@ import { flushBuffer, proposalKey } from '../scripts/logs.mjs';
 import { unpushedCount, brainSync } from '../scripts/brain.mjs';
 import { recordTurn, isMainTopic } from '../scripts/comms.mjs';
 import { heldTopics } from '../scripts/topic.mjs';
-import { waitingClaim, operatorQuestion, validWaker, activeTimer, setTimer, WAIT_REASON, AUTO_TIMER_MS, AUTO_TIMER_MAX_MS } from '../scripts/waker.mjs';
+import { waitingClaim, operatorQuestion, operatorWait, waitOnlyStep, validWaker, activeTimer, setTimer, AUTO_TIMER_MS, AUTO_TIMER_MAX_MS, OPERATOR_TIMER_MS, OPERATOR_TIMER_MAX_MS, IDLE_RING_MS } from '../scripts/waker.mjs';
 
 export const HOOK_META = { event: 'Stop', class: 'c', limit: '2 lines (queued to next prompt); 1 block reason', principles: ['P-003', 'P-026', 'P-030', 'P-040', 'P-042', 'P-043', 'P-059', 'P-057'] };
 
+export const IDLE_REASON = (id, wait) => `topic ${id} has no own work: its next step only waits ("${wait}"). Work done in another thread or topic reports by mail, which wakes you; nothing else keeps this thread alive. End your reply with one line for the operator: close the topic (done), pause it, or give a new task (no operational data, P-060)`;
 export const AUTO_TIMER_THEN = 'the last turn ended waiting without a timer: continue the work now; decide with your recommended option (P-057)';
 
-export const NEXT_STEP_REASON = (topic, next) => `handover of topic ${topic} has a next step: "${next}". Do it now in this turn. Stop only if it needs the operator (ask as a blocker, P-059) or waits for an event with a verified waker (P-057); then end without a new message to the operator (no waker, ID, run time or commit: operational data is not for the operator, P-060). A next step in the handover is not a reason to end the turn, P-026`;
+// T3 shows the operator only the last message of a turn and folds the earlier ones under "Worked for …": a note written
+// after a block hid the answer (operator 2026-11-03: "the payload I want is hidden, I get the operational message").
+export const FINAL_REPLY = 'The operator sees only your last message of this turn (earlier ones are folded away): if your answer still stands, end without any new text; if it changed, end with the complete corrected answer. Never write about this hook, a timer, a waker or IDs (P-060)';
+
+export const NEXT_STEP_REASON = (topic, next) => `handover of topic ${topic} has a next step: "${next}". Do it now in this turn. Stop only if it needs the operator (ask as a blocker, P-059) or waits for an event with a verified waker (P-057); then end without a note about it (operational data is not for the operator, P-060). A next step in the handover is not a reason to end the turn, P-026`;
 
 export const CHECK_IN_REASON = (q) => `the reply ends with a check-in question: "${q}". A question whether to start, continue or do a step of the assignment is forbidden (P-059): if the step is within the assignment, the held topic and your authority, do it now in this turn. Ask only as a blocker (input only the operator has; step beyond the assignment or authority, P-002/P-018/P-024; a rule requires consent; a choice of operator priority) and then say which blocker it is`;
 
@@ -62,13 +67,35 @@ const CHECK_IN = [
 /** The reply's closing check-in question, or null. Only a question that ends the reply counts (the operator must answer it). */
 export function checkInQuestion(text) {
   if (typeof text !== 'string') return null;
+  const lastSentence = (body) => {
+    // Last sentence: after the last sentence end or line break before the final '?'.
+    const cut = Math.max(body.lastIndexOf('\n'), ...['. ', '! ', '? ', ': '].map((d) => { const i = body.lastIndexOf(d); return i < 0 ? -1 : i + 1; }));
+    return body.slice(cut + 1).replace(/^[-*>#_`\s]+/, '').trim() + '?';
+  };
   const tail = text.replace(/[\s*_`]+$/, '');
-  if (!tail.endsWith('?')) return null;
-  // Last sentence: after the last sentence end or line break before the final '?'.
-  const body = tail.slice(0, -1);
-  const cut = Math.max(body.lastIndexOf('\n'), ...['. ', '! ', '? ', ': '].map((d) => { const i = body.lastIndexOf(d); return i < 0 ? -1 : i + 1; }));
-  const q = (body.slice(cut + 1).replace(/^[-*>#_`\s]+/, '').trim() + '?');
-  return CHECK_IN.some((re) => re.test(q)) ? q : null;
+  if (tail.endsWith('?') && CHECK_IN.some((re) => re.test(lastSentence(tail.slice(0, -1))))) return lastSentence(tail.slice(0, -1));
+  // A "**Pre teba:**" block opening with a check-in question is still a check-in, also when a recommendation follows it
+  // ("Pre teba: mám to opraviť? Odporúčam áno; začnem ..." ended the turn without the fix, alice 2026-11-05).
+  const pre = /(^|\n)\s*[*_]*Pre teba[*_:]*\s*/i.exec(text);
+  if (pre) {
+    const rest = text.slice(pre.index + pre[0].length);
+    const qi = rest.indexOf('?');
+    const q = qi > 0 ? lastSentence(rest.slice(0, qi)) : null;
+    if (q && CHECK_IN.some((re) => re.test(q))) return q;
+  }
+  return null;
+}
+
+export const UNRECORDED_STEP_REASON = (topic, sentence) => `the reply names a next step ("${sentence}"), but the handover of topic ${topic} has no next step. The step travels only through the handover (P-026, P-011): save it now (workflow:save handover ${topic} --next "<step>") and do it in this turn. Without it the wake rings nothing and the loop of work stops`;
+// Only the agent's own announcement counts ("robím ako ďalší krok", "Ďalší krok: …", "the next step is"), not a description of the feature.
+const STEP_CLAIM = /(?:\bako|\bas)\s+(?:the\s+)?(?:ďalší|dalsi|next)\s+(?:krok|step)\b|(?:ďalším|dalsim)\s+krokom\s+(?:je|bude)\b|^[\s\-*_>#]*(?:ďalší|dalsi)\s+krok\s*(?:je\b|:)|\bnext step\s+(?:is\b|:)/i;
+/** The sentence in which the reply announces a next step, or null. */
+export function nextStepClaim(text) {
+  if (typeof text !== 'string') return null;
+  // Quoted examples and code are data, not an announcement.
+  text = text.replace(/„[^“]*“|"[^"]*"|«[^»]*»|“[^”]*”|`[^`]*`/g, ' ');
+  const sentence = text.split(/(?<=[.!?:])\s+|\n+/).find((x) => STEP_CLAIM.test(x));
+  return sentence ? sentence.replace(/[*_`]/g, '').trim().slice(0, 120) : null;
 }
 
 export const PICKED_ASSIST_LINE = (list) => `picked assist unanswered: ${list.map((w) => w.id).join(', ')}; answer each with comms send --reply-to <id>; answered another way (one reply for several, a new message): comms settle --id <id>; else say why it waits (P-042)`;
@@ -79,6 +106,7 @@ export function run(input) {
   // `opened_at` of this turn's record (from the prompt hook) keeps a late Stop from closing a newer turn.
   let held = [];
   let work = null;
+  let idleWait = null;
   let closeTurn = () => {};
   // The reply waits for the operator or asks them: the handover step is the operator's move, not a continuation; only a
   // timer (resume_at) rings the thread (bob 2026-11-03: rung 76 s after a question, before the operator could read it).
@@ -87,15 +115,36 @@ export function run(input) {
     try { held = ctx.brainDir ? heldTopics(ctx.brainDir, ctx.thread) : []; } catch { held = []; }
     const openedAt = ctx.brainDir ? readThreadState(ctx.brainDir, ctx.thread).turn_opened_at ?? null : null;
     // P-026: the next step travels with the closed turn; wake (code, not the agent) rings the thread to continue it.
-    work = held.find((t) => !isMainTopic(t) && t.next);
+    // A paused topic (snooze) is no work: no continue bell, no next-step block; its end rings the thread once.
+    work = held.find((t) => !isMainTopic(t) && t.next && t.state !== 'paused');
+    // A next step that only waits (bob 2026-11-03: "Čakať na hlásenie témy …" rang 11 times in 4 h) is rung in hours, at most
+    // IDLE_RING_MS.length times per step; then the thread rests until mail or the operator wakes it.
+    idleWait = work ? waitOnlyStep(work.next) : null;
+    const snooze = !work && held.find((t) => t.state === 'paused' && t.paused_until && Date.parse(t.paused_until) > Date.now());
     closeTurn = () => {
-      const timer = ctx.brainDir ? activeTimer(readThreadState(ctx.brainDir, ctx.thread)) : null;
-      recordTurn(ctx, 'closed', held, { openedAt, next: timer?.then || (toOperator ? null : work?.next) || null, resumeAt: timer?.at || null });
+      const st = ctx.brainDir ? readThreadState(ctx.brainDir, ctx.thread) : {};
+      const timer = activeTimer(st);
+      if (!timer && snooze) return recordTurn(ctx, 'closed', held, { openedAt, next: `pause of topic ${snooze.id} ended: run topic.mjs resume ${snooze.id}, then continue from handover`, resumeAt: snooze.paused_until });
+      // An armed waker (schedule, background task, mail) rings the thread itself: no continue bell on top of it
+      // (2026-11-03: rung 2 min after arming the check for 06:00, only to say there is nothing to do).
+      const armed = !timer && validWaker(st);
+      if (!timer && idleWait && !armed) {
+        const key = `${work.id}\n${work.next}`;
+        const n = st.idle_ring?.key === key && st.turn_source !== 'operator' ? Number(st.idle_ring.n || 0) : 0;
+        if (ctx.brainDir) writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), idle_ring: { key, n: n + 1 } });
+        const due = IDLE_RING_MS[n];
+        return recordTurn(ctx, 'closed', held, { openedAt, next: due ? work.next : null, resumeAt: due ? new Date(Date.now() + due).toISOString() : null });
+      }
+      recordTurn(ctx, 'closed', held, { openedAt, next: timer?.then || (toOperator || armed ? null : work?.next) || null, resumeAt: timer?.at || null });
     };
   }
   // The turn is closed only when the stop really ends it: a blocked stop keeps the agent working, so the record stays open
   // (wake dedupes against open turns and does not ring a running thread, P-043).
-  const end = (out) => { if (!out.decision) closeTurn(); return out; };
+  const end = (out) => {
+    if (!out.decision) closeTurn();
+    else out.reason = `${out.reason}\n${FINAL_REPLY}`;
+    return out;
+  };
   if (!ctx.brainDir) return end({});
   const signals = [];
   try {
@@ -109,7 +158,7 @@ export function run(input) {
     const sync = brainSync(ctx.brainDir);
     unpushed = sync.unpushed ?? unpushedCount(ctx.brainDir);
     if (sync.conflict) signals.push(`conflict: ${sync.conflict.join(', ')} (brain not merged, P-040)`);
-    else if (unpushed > 0) signals.push(`unpushed: ${unpushed}`);
+    else if (unpushed > 0) signals.push(`unpushed: ${unpushed}${sync.error && sync.error !== 'no remote origin' ? ` (${sync.error})` : ''}`);
   }
   if (ctx.thread) {
     const state = readThreadState(ctx.brainDir, ctx.thread);
@@ -136,15 +185,16 @@ export function run(input) {
     const waits = waitingClaim(msg);
     const asks = waits ? null : operatorQuestion(msg);
     const waiting = (waits || asks) && !validWaker(readThreadState(ctx.brainDir, ctx.thread)) ? (waits ? `says it waits ("${waits}")` : `ends with an open question to the operator ("${String(asks).slice(0, 80)}")`) : null;
-    if (waiting && !input.stop_hook_active) {
-      const q = state.turn_source !== 'wake' && checkInQuestion(msg);
-      return end({ decision: 'block', reason: [mistake && MISTAKE_REASON(mistake), q && CHECK_IN_REASON(q), WAIT_REASON(waiting)].filter(Boolean).join('\n') });
-    }
-    if (waiting) {
-      // Ended waiting anyway: code arms the timer, so the thread is rung again (never an idle promise).
+    // No block: a block made the agent end with a note about the timer, the only message T3 shows (operator 2026-11-03:
+    // "the operational mess should not be written at all"). Code arms the timer silently instead.
+    const paused = held.some((t) => t.state === 'paused') && !work;
+    // A topic whose next step only waits gets idle rings (closeTurn), not auto timers on top of them.
+    if (waiting && !paused && !idleWait) {
       const st = readThreadState(ctx.brainDir, ctx.thread);
       const n = Number(st.auto_timer_n || 0);
-      setTimer(ctx.brainDir, ctx.thread, { delayMs: Math.min(AUTO_TIMER_MS * 2 ** n, AUTO_TIMER_MAX_MS), then: AUTO_TIMER_THEN, auto: true });
+      // Waiting on the operator rings in hours (operator 2026-11-03), waiting on a job in minutes.
+      const [base, max] = operatorWait(msg) ? [OPERATOR_TIMER_MS, OPERATOR_TIMER_MAX_MS] : [AUTO_TIMER_MS, AUTO_TIMER_MAX_MS];
+      setTimer(ctx.brainDir, ctx.thread, { delayMs: Math.min(base * 2 ** n, max), then: AUTO_TIMER_THEN, auto: true });
       writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), auto_timer_n: n + 1 });
     }
     // P-026 continuation and check-in: once per turn (stop_hook_active); a bell turn does not block on them (its job is that
@@ -155,8 +205,11 @@ export function run(input) {
       // The same next step blocks once per thread: a step that waits for a later event (a daily report) would otherwise make
       // every turn end with a second, operational message (alice 2026-11-03: the report scrolled away under waker notes).
       const nextKey = work ? `${work.id}\n${work.next}` : null;
-      const nextStep = !bell && !toOperator && work && state.next_step_blocked !== nextKey;
-      const reasons = [mistake && MISTAKE_REASON(mistake), q && CHECK_IN_REASON(q), nextStep && NEXT_STEP_REASON(work.id, work.next)].filter(Boolean);
+      const nextStep = !bell && !toOperator && work && state.next_step_blocked !== nextKey && (idleWait || !validWaker(state));
+      // P-026/P-011: a reply that announces a next step while the held work topic's handover has none loses it with the turn.
+      const stepTopic = held.find((t) => !isMainTopic(t) && t.state !== 'paused');
+      const stepClaim = !bell && !work && !toOperator && stepTopic && nextStepClaim(msg);
+      const reasons = [mistake && MISTAKE_REASON(mistake), q && CHECK_IN_REASON(q), stepClaim && UNRECORDED_STEP_REASON(stepTopic.id, stepClaim), nextStep && (idleWait ? IDLE_REASON(work.id, idleWait) : NEXT_STEP_REASON(work.id, work.next))].filter(Boolean);
       if (nextStep) writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), next_step_blocked: nextKey });
       if (reasons.length) return end({ decision: 'block', reason: reasons.join('\n') });
     }

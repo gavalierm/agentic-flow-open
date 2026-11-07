@@ -1,0 +1,135 @@
+// P-054: a step refused in this turn is not reached another way (operator 2026-11-07: "agent at an obstacle tends to
+// route around it"). Example: python3 rewrote a file after a denied sed -i (2026-11-01); git grep -- docs after a denied
+// read of docs/principles (2026-11-05).
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { setup } from './helpers.mjs';
+import { analyze, bypassOf, callKey, gitHookBypass, transcriptDenials, withDenial, stateDenials } from '../scripts/bypass.mjs';
+
+function tmp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'wf-bypass-')); }
+
+test('analyze: paths a call reaches and whether it may write them', () => {
+  const dir = tmp();
+  try {
+    fs.mkdirSync(path.join(dir, 'docs', 'principles'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'a.md'), 'x');
+    const f = path.join(dir, 'a.md');
+    assert.deepEqual(analyze('Bash', { command: `cat ${f}` }, dir), { paths: [f], write: false });
+    assert.equal(analyze('Bash', { command: `python3 -c "open('${f}','w').write('y')" ${f}` }, dir).write, true);
+    assert.equal(analyze('Bash', { command: `sed -n 1p ${f}` }, dir).write, false);
+    assert.equal(analyze('Bash', { command: `sed -i s/x/y/ ${f}` }, dir).write, true);
+    assert.equal(analyze('Bash', { command: `cat a.md > b.md` }, dir).write, true);
+    assert.deepEqual(analyze('Bash', { command: 'git grep foo -- docs' }, dir).paths, [path.join(dir, 'docs')]);
+    assert.deepEqual(analyze('Bash', { command: 'cd docs && ls principles' }, dir).paths, [path.join(dir, 'docs', 'principles')]);
+    assert.deepEqual(analyze('Read', { file_path: f }, dir), { paths: [f], write: false });
+    assert.deepEqual(analyze('Bash', { command: `node /opt/x/save.mjs memory k` }, dir).paths, [], 'the script a interpreter runs is the tool, not a target');
+    assert.deepEqual(analyze('Bash', { command: `ls ${dir}` }, dir).paths, [], 'the working folder itself is too wide');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('bypassOf: same path another way is caught; a read after a refused write is not', () => {
+  const dir = tmp();
+  try {
+    const f = path.join(dir, 'a.md');
+    fs.writeFileSync(f, 'x');
+    fs.mkdirSync(path.join(dir, 'docs', 'principles'), { recursive: true });
+    const deniedWrite = { tool: 'Bash', input: { command: `sed -i s/x/y/ ${f}` } };
+    deniedWrite.key = callKey(deniedWrite.tool, deniedWrite.input);
+    const hit = bypassOf({ tool: 'Bash', toolInput: { command: `python3 -c "import sys" ${f}` }, cwd: dir, denials: [deniedWrite] });
+    assert.equal(hit?.path, f);
+    assert.equal(bypassOf({ tool: 'Edit', toolInput: { file_path: f, old_string: 'x', new_string: 'y' }, cwd: dir, denials: [deniedWrite] })?.path, f);
+    assert.equal(bypassOf({ tool: 'Read', toolInput: { file_path: f }, cwd: dir, denials: [deniedWrite] }), null, 'reading a file whose write was refused is finding the cause');
+    assert.equal(bypassOf({ tool: deniedWrite.tool, toolInput: deniedWrite.input, cwd: dir, denials: [deniedWrite] }), null, 'the same call again is decided by the same check');
+    const deniedRead = { tool: 'Bash', input: { command: `cat ${f}` } };
+    assert.equal(bypassOf({ tool: 'Read', toolInput: { file_path: f }, cwd: dir, denials: [deniedRead] })?.path, f);
+    const deniedDocs = { tool: 'Grep', input: { pattern: 'x', path: path.join(dir, 'docs', 'principles') } };
+    assert.ok(bypassOf({ tool: 'Bash', toolInput: { command: 'git grep x -- docs' }, cwd: dir, denials: [deniedDocs] }), 'the parent folder holds the refused one');
+    assert.equal(bypassOf({ tool: 'Read', toolInput: { file_path: path.join(dir, 'other.md') }, cwd: dir, denials: [deniedRead] }), null);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('transcriptDenials: harness refusals of the current turn only', () => {
+  const dir = tmp();
+  try {
+    const t = path.join(dir, 's.jsonl');
+    const use = (id, command) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name: 'Bash', input: { command } }] } });
+    const res = (id, text, ts) => ({ type: 'user', timestamp: ts, message: { content: [{ type: 'tool_result', tool_use_id: id, is_error: true, content: text }] } });
+    const prompt = (ts) => ({ type: 'user', timestamp: ts, message: { content: 'next' } });
+    const lines = [
+      use('a', 'cat /x/old'), res('a', 'Permission to use Bash with command cat /x/old has been denied.', '2026-11-07T10:00:00Z'),
+      prompt('2026-11-07T10:01:00Z'),
+      use('b', 'cat /x/new'), res('b', 'Permission to use Bash with command cat /x/new has been denied.', '2026-11-07T10:02:00Z'),
+      use('c', 'false'), res('c', 'Exit code 1', '2026-11-07T10:03:00Z'),
+    ];
+    fs.writeFileSync(t, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+    assert.deepEqual(transcriptDenials(t).map((d) => d.input.command), ['cat /x/new'], 'the last operator prompt bounds the turn');
+    assert.deepEqual(transcriptDenials(t, '2026-11-07T09:00:00Z').map((d) => d.input.command), ['cat /x/old', 'cat /x/new']);
+    assert.deepEqual(transcriptDenials(path.join(dir, 'missing.jsonl')), []);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('thread state keeps only the denials of the current turn', () => {
+  const s = withDenial({ turn_started_at: '2026-11-07T10:00:00Z', denials: [{ at: '2026-11-07T09:00:00Z', key: 'old' }] }, { key: 'new' });
+  assert.deepEqual(stateDenials(s).map((d) => d.key), ['new']);
+});
+
+test('gitHookBypass: --no-verify and a changed core.hooksPath, not a read of it', () => {
+  assert.equal(gitHookBypass('git -C ../brain commit --no-verify -m x'), '--no-verify');
+  assert.equal(gitHookBypass('git push --no-verify origin dev'), '--no-verify');
+  assert.equal(gitHookBypass('git config core.hooksPath /dev/null'), 'core.hooksPath');
+  assert.equal(gitHookBypass('git -c core.hooksPath=/x commit -m y'), 'core.hooksPath');
+  assert.equal(gitHookBypass('git config --unset core.hooksPath'), 'core.hooksPath');
+  assert.equal(gitHookBypass('git config core.hooksPath'), null);
+  assert.equal(gitHookBypass('git commit -m "x"'), null);
+});
+
+test('hook: a brain write refused by Edit is not done by node -e in the same turn; the next prompt lifts it', () => {
+  const fx = setup();
+  try {
+    const target = path.join(fx.brain, 'memory', 'note.md');
+    const edit = fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: target, content: 'x' } });
+    assert.equal(edit.json.hookSpecificOutput?.permissionDecision, 'deny', edit.stderr);
+    assert.match(edit.json.hookSpecificOutput.permissionDecisionReason, /direct write into brain/);
+    const around = { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: `node -e "require('fs').writeFileSync(process.argv[1], 'x')" ${target}` } };
+    const second = fx.hook('pre-tool-use.mjs', around);
+    assert.equal(second.json.hookSpecificOutput?.permissionDecision, 'deny', second.stderr);
+    assert.match(second.json.hookSpecificOutput.permissionDecisionReason, /bypass \(P-054\)/);
+    const read = fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: target } });
+    assert.doesNotMatch(JSON.stringify(read.json), /P-054/, 'reading is allowed');
+    fx.hook('user-prompt-submit.mjs', { hook_event_name: 'UserPromptSubmit', prompt: 'ok, urob to inak' });
+    const after = fx.hook('pre-tool-use.mjs', around);
+    assert.doesNotMatch(JSON.stringify(after.json), /P-054/, 'a new operator prompt is a new turn');
+  } finally { fx.cleanup(); }
+});
+
+test('hook: harness refusal in the transcript blocks the same file through another tool', () => {
+  const fx = setup();
+  try {
+    const f = path.join(fx.project, 'notes.txt');
+    fs.writeFileSync(f, 'x');
+    const t = path.join(fx.root, 's.jsonl');
+    const lines = [
+      { type: 'user', timestamp: new Date(Date.now() - 1000).toISOString(), message: { content: 'go' } },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'u1', name: 'Bash', input: { command: `sed -n 1,5p ${f}` } }] } },
+      { type: 'user', timestamp: new Date().toISOString(), message: { content: [{ type: 'tool_result', tool_use_id: 'u1', is_error: true, content: `Permission to use Bash with command sed -n 1,5p ${f} has been denied.` }] } },
+    ];
+    fs.writeFileSync(t, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+    const read = fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Read', transcript_path: t, tool_input: { file_path: f } });
+    assert.equal(read.json.hookSpecificOutput?.permissionDecision, 'deny', read.stderr);
+    assert.match(read.json.hookSpecificOutput.permissionDecisionReason, /P-054/);
+  } finally { fx.cleanup(); }
+});
+
+test('hook: settings that enforce the workflow and git past its hooks ask the operator', () => {
+  const fx = setup();
+  try {
+    const s = fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: path.join(fx.project, '.claude', 'settings.json'), old_string: 'a', new_string: 'b' } });
+    assert.equal(s.json.hookSpecificOutput?.permissionDecision, 'ask', s.stderr);
+    assert.match(s.json.hookSpecificOutput.permissionDecisionReason, /enforce the workflow/);
+    const g = fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git commit --no-verify -m x' } });
+    assert.equal(g.json.hookSpecificOutput?.permissionDecision, 'ask', g.stderr);
+  } finally { fx.cleanup(); }
+});

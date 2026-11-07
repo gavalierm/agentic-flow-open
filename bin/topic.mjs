@@ -2,12 +2,16 @@
 // topic.mjs create <id> --subject "..." [--task "<operator's task>"] [--kind code|discussion] [--no-claim] [--no-copy] [--for-thread <new thread id>] [--here | --new-thread]
 //           claim <id> [--force --operator-approved] [--mode operator|auto]
 //           release <id> [--force --operator-approved]
+//           handoff <id> [--task ".." --done ".." --next ".." --files ".." --questions ".."] [--leave-outbox]
+//                        to another machine: flush logs, send outbox, handover, release, push (P-040)
 //           main [--force --operator-approved]   persona main thread (topic main, P-045)
 //           thread <id> [--task ".."] [--mode operator|auto]   new T3 thread for a free topic (P-036)
+//           pause <id> [--until <ISO | <n>d | <n>h>] [--reason ".."]   snooze: no bells until resumed or until
+//           resume <id>
 //           list | status | copy <id>
 import { parseArgs, fail } from '../scripts/util.mjs';
-import { loadContext } from '../scripts/config.mjs';
-import { createTopic, startThreadForTopic, claimTopic, claimMain, releaseTopic, listTopics, heldTopics, ensureCodeCopy, readTopic } from '../scripts/topic.mjs';
+import { loadContext, foreignProjectCwd } from '../scripts/config.mjs';
+import { createTopic, startThreadForTopic, claimTopic, claimMain, releaseTopic, handoffTopic, listTopics, heldTopics, ensureCodeCopy, readTopic, pauseTopic, resumeTopic } from '../scripts/topic.mjs';
 import { topicLine } from '../scripts/index.mjs';
 
 const args = parseArgs(process.argv.slice(2));
@@ -16,6 +20,8 @@ const out = (s) => process.stdout.write(s + '\n');
 
 try {
   const ctx = loadContext({ project: args.project });
+  const foreign = foreignProjectCwd(ctx, args.project);
+  if (foreign) fail(foreign);
   if (cmd === 'create') {
     if (!id) fail('usage: topic.mjs create <id> --subject "..." [--kind code|discussion]');
     const res = createTopic(ctx, { id, subject: args.subject, kind: args.kind || 'discussion', mode: args.mode, claim: !args['no-claim'], copy: !args['no-copy'], forThread: args['for-thread'] || null, task: args.task || null, explicitProject: !!args.project,
@@ -39,7 +45,7 @@ try {
     if (!id) fail('usage: topic.mjs claim <id> [--force --operator-approved]');
     const res = claimTopic(ctx, id, { force: !!args.force, operatorApproved: !!args['operator-approved'], mode: args.mode });
     if (!res.ok) fail(res.reason);
-    out(res.modeChanged ? `topic ${id} mode ${res.holder.mode}${res.comms?.ok ? ', comms updated' : ''}` : res.already ? `topic ${id} already held by ${ctx.thread}${res.comms?.ok ? ', comms registered' : ''}` : `topic ${id} claimed by ${ctx.thread}${res.pushed ? ', pushed' : ''}`);
+    out(res.modeChanged ? `topic ${id} mode ${res.holder.mode}${res.comms?.ok ? ', comms updated' : ''}` : res.already ? `topic ${id} already held by ${ctx.thread}${res.comms?.ok ? ', comms registered' : ''}` : `topic ${id} claimed by ${ctx.thread}${res.holder?.took_over_from ? ` (took over from ${res.holder.took_over_from})` : ''}${res.pushed ? ', pushed' : ''}`);
     if (res.warning) out(res.warning);
     if (res.comms && !res.comms.ok && !res.comms.skipped) out(`comms: topic not registered (${res.comms.reason})`);
     const topic = readTopic(ctx.brainDir, id);
@@ -59,6 +65,25 @@ try {
     out(res.already ? `topic ${id} has no holder` : `topic ${id} released`);
     if (res.comms && !res.comms.ok && !res.comms.skipped) out(`comms: topic not registered as free (${res.comms.reason})`);
     if (res.mail) out(res.mail);
+  } else if (cmd === 'handoff') {
+    if (!id) fail('usage: topic.mjs handoff <id> [--task ".." --done ".." --next ".." --files ".." --questions ".."] [--leave-outbox]');
+    const handover = args.task || args.done || args.next ? { task: args.task, done: args.done, next: args.next, files: args.files, questions: args.questions } : null;
+    const res = handoffTopic(ctx, id, { handover, leaveOutbox: !!args['leave-outbox'] });
+    for (const step of res.steps || []) out(step);
+    for (const n of res.notices || []) out(n);
+    if (!res.ok) fail(res.reason);
+    out(`topic ${id} handed off${res.pushed ? ', pushed' : ''}: on the other machine run topic.mjs claim ${id} (it pulls first)`);
+    if (res.comms && !res.comms.ok && !res.comms.skipped) out(`comms: topic not registered as free (${res.comms.reason})`);
+  } else if (cmd === 'pause') {
+    if (!id) fail('usage: topic.mjs pause <id> [--until <ISO | <n>d | <n>h>] [--reason ".."]');
+    const rel = /^(\d+)\s*([dh])$/i.exec(String(args.until || ''));
+    const until = rel ? new Date(Date.now() + Number(rel[1]) * (rel[2].toLowerCase() === 'd' ? 86400_000 : 3600_000)).toISOString() : args.until || null;
+    const res = pauseTopic(ctx, id, { until, reason: args.reason || null });
+    out(`topic ${id} paused${res.topic.paused_until ? ` until ${res.topic.paused_until}` : ''}`);
+  } else if (cmd === 'resume') {
+    if (!id) fail('usage: topic.mjs resume <id>');
+    const res = resumeTopic(ctx, id);
+    out(res.already ? `topic ${id} is not paused` : `topic ${id} resumed`);
   } else if (cmd === 'list') {
     const topics = listTopics(ctx.brainDir);
     out(topics.length ? topics.map((t) => topicLine(t)).join('\n') : 'no open topics');
@@ -71,7 +96,7 @@ try {
     const copy = ensureCodeCopy(ctx, id);
     out(`code copy: ${copy.path} (branch ${copy.branch})${copy.created ? '' : ' (existing)'}`);
   } else {
-    fail('usage: topic.mjs create|claim|main|release|list|status|copy');
+    fail('usage: topic.mjs create|claim|main|release|handoff|pause|resume|list|status|copy');
   }
 } catch (err) {
   fail(err.message);
