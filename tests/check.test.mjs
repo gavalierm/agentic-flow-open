@@ -90,5 +90,18 @@ test('pinClone: brain policy workflow_version moves a release install to that ta
     fs.rmSync(path.join(clone, 'x'));
     g(clone, 'checkout', '-q', 'main');
     assert.equal(pinWorkflow({ policy: { workflow_version: 'v1.0.2' } }, clone), null);
+    // Two brains on one machine with different pins (flow-public#2): the clone follows the brain that set it or a pin the
+    // operator just changed; the other brain reports the conflict instead of switching the clone back.
+    g(clone, 'checkout', '-q', 'v1.0.1');
+    const penv = { WORKFLOW_PIN_FILE: path.join(dir, 'pin.json') };
+    const [a, b] = ['brain-a', 'brain-b'].map((n) => { const d = path.join(dir, n); fs.mkdirSync(d); return d; });
+    const pin = (brainDir, v) => pinWorkflow({ brainDir, policy: { workflow_version: v } }, clone, penv);
+    assert.match(pin(a, 'v1.0.3'), /switched v1.0.1 -> v1.0.3/);
+    assert.match(pin(b, 'v1.0.2'), /not switched to v1.0.2 .*brain-a pins v1.0.3/);
+    assert.match(pin(b, 'v1.0.2'), /brain-a pins v1.0.3/, 'still a conflict at the next start');
+    assert.equal(pin(a, 'v1.0.3'), null);
+    assert.match(pin(b, 'v1.0.4'), /switched v1.0.3 -> v1.0.4/, 'the operator changed the pin of brain b');
+    assert.match(pin(a, 'v1.0.3'), /brain-b pins v1.0.4/);
+    assert.equal(pin(a, 'v1.0.4'), null, 'same pin: no conflict');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

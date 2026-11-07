@@ -63,9 +63,9 @@ Workflow sa klonuje presne do priečinka `skills/workflow` v nastaveniach Claude
 
 ```sh
 mkdir -p ~/.claude/skills
-git clone <adresa-repa-agentic-flow> ~/.claude/skills/workflow
-git -C ~/.claude/skills/workflow checkout v0.1.0            # stabilné vydanie (tag), nie branch
-node ~/.claude/skills/workflow/bin/adapter.mjs --version   # vypíše `workflow <sha>`
+git clone https://github.com/gavalierm/agentic-flow-public.git ~/.claude/skills/workflow
+git -C ~/.claude/skills/workflow checkout "$(git -C ~/.claude/skills/workflow tag -l 'v*' --sort=-v:refname | head -1)"   # najnovšie vydanie (tag), nie branch
+git -C ~/.claude/skills/workflow describe --tags            # vypíše nainštalované vydanie, napr. v0.9.14
 cd ~/.claude/skills/workflow && npm test                    # voliteľné: testy workflow (bez závislostí)
 ```
 
@@ -73,21 +73,42 @@ cd ~/.claude/skills/workflow && npm test                    # voliteľné: testy
 
 ```sh
 mkdir -p ~/.claude/skills
-git clone <adresa-repa-agentic-flow> ~/.claude/skills/workflow
-git -C ~/.claude/skills/workflow checkout v0.1.0
+git clone https://github.com/gavalierm/agentic-flow-public.git ~/.claude/skills/workflow
+git -C ~/.claude/skills/workflow checkout "$(git -C ~/.claude/skills/workflow tag -l 'v*' --sort=-v:refname | head -1)"
+git -C ~/.claude/skills/workflow describe --tags
 ```
 
 **Windows (PowerShell)**
 
 ```powershell
 New-Item -ItemType Directory -Force "$env:USERPROFILE\.claude\skills" | Out-Null
-git clone <adresa-repa-agentic-flow> "$env:USERPROFILE\.claude\skills\workflow"
-git -C "$env:USERPROFILE\.claude\skills\workflow" checkout v0.1.0
+$wf = "$env:USERPROFILE\.claude\skills\workflow"
+git clone https://github.com/gavalierm/agentic-flow-public.git $wf
+git -C $wf checkout (git -C $wf tag -l 'v*' --sort=-v:refname | Select-Object -First 1)
+git -C $wf describe --tags
 ```
+
+Konkrétne vydanie: `checkout vX.Y.Z` (zoznam vydaní: `git tag -l 'v*' --sort=-v:refname`). Aby stroj dostal každé ďalšie vydanie sám, daj do `policy.json` brainu `"workflow_version": "latest"` (pozri „Jeden brain na viacerých počítačoch“).
 
 Overenie: v ľubovoľnom projekte spusti `claude` a napíš `/plugins`. V zozname má byť `workflow` (vypnutý). Plugin je vypnutý predvolene; zapína sa v projekte.
 
 ## Zapnutie v projekte
+
+### Pojmy a rozloženie
+
+| Pojem | Čo to je | Príklad |
+|---|---|---|
+| koreň | priečinok s poštou a projektmi; ľubovoľný, aj s medzerou v ceste | `~/agentic`, `D:\Claude projekty` |
+| projekt (obal) | priečinok jedného projektu v koreni; drží repo(á) projektu a jeho brain | `<koreň>/pilot/` |
+| repo projektu | git repo s kódom; jeho priečinok je projekt v T3 / Claude Code a jeho názov je **meno projektu v pošte** (adresa `<repo>/<téma>`, `--sender`) | `<koreň>/pilot/pilot-app/` |
+| brain projektu | git repo s dátami workflow (pamäť, rozhodnutia, témy, skilly projektu); voliteľný (P-024) | `<koreň>/pilot/pilot-brain/` |
+| persona | agent s menom; jeho repo `agent-<meno>` je zároveň brain | `agent-bob` |
+| doména | priečinok persony so značkou `.agentic-domain`: hranica zápisu agentov (P-052), brain domény je brain persony | `~/agentic/bob/` |
+
+- Projekt s vlastným brainom bez `.agentic-domain` nie je doména: agent v ňom zapisuje do priečinka projektu, kópií jeho tém a do ciest v `domain.allow_outside` v `policy.json` brainu.
+- Pomenovanie: obal `<meno>`, repo `<meno>-<časť>` (`-app`, `-web`), brain `<meno>-brain`. Repo nepomenuj rovnako ako obal (`pilot/pilot` je nečitateľné). Názov priečinka repa je meno v pošte, takže neskoršie premenovanie znamená nový kľúč pošty (pozri „Premenovanie projektu“).
+- Odporúčaný spôsob: povedz agentovi „založ projekt `<meno>`“ (skill `workflow:project`, skript `bin/project.mjs`). Sprievodca založí `<koreň>/<meno>/<meno>-<časť>` a `<koreň>/<meno>/<meno>-brain`, súkromné repá na GitHube operátora, nastavenia projektu a projekt v T3; koreň je predvolene `~/agentic`, iný `--root <dir>`. Ten istý skript obnoví projekt na novom stroji (`restore`) a pripojí existujúce repá (`connect`). Ručný postup je nižšie.
+- Persona: `persona-create.mjs <meno> [--root <dir>]` (predvolene doména `~/agentic/<meno>`).
 
 ### Ručne
 
@@ -109,7 +130,7 @@ Overenie: v ľubovoľnom projekte spusti `claude` a napíš `/plugins`. V zoznam
    Ak brain na tomto stroji leží inde, zapíš cestu do `local/workflow.json` (rovnaký formát; `local/` je v `.gitignore`). Ten má prednosť.
 
 3. Ak taký brain ešte neexistuje, založ ho: `node ~/.claude/skills/workflow/bin/brain-init.mjs ../<nazov-brain> --project . [--remote <adresa-repa-brain>]`. Existujúci klon brain aktivuj: `node ~/.claude/skills/workflow/bin/brain-init.mjs ../<nazov-brain> --attach --project .` (nastaví `core.hooksPath`, vytvorí `local/`).
-4. Súbory commitni do projektu. Spusti `claude` v projekte; pri štarte sa má zobraziť riadok `workflow <sha>`.
+4. Súbory commitni do projektu. Spusti `claude` v projekte; prvá odpoveď agenta má začať stavovým blokom `<projekt> / bez témy` (pozri „Prvé použitie“).
 
 Oba súbory generuje adaptér: `node ~/.claude/skills/workflow/bin/adapter.mjs claude-code` (spusti v koreni projektu; cieľ je priečinok, v ktorom beží, alebo `--project`, nie projekt session (`CLAUDE_PROJECT_DIR`, `WORKFLOW_PROJECT_DIR`), takže persona ho môže spustiť v spravovanom projekte). Vytvorí `.claude/settings.json` (`enabledPlugins`, `permissions.deny/ask`, `autoMemoryEnabled: false`, `autoCompactWindow`), `.workflow.json` iba s `--brain ../<nazov-brain>` (bez neho projekt brain nemá), zapíše `.claude/skills/`, `local/` a `scratch/` do `.gitignore`, vytvorí `scratch/` (pracovné súbory agenta, P-052) a skopíruje skilly brain do `.claude/skills/`. Generované súbory neupravuj, ďalšie generovanie ich prepíše.
 
@@ -136,9 +157,16 @@ Doména je priečinok, v ktorom agenti smú zapisovať (P-052): persona a repá,
 
 Zápis mimo domény hook zamietne (nepýta sa). Výnimky má brain domény v `policy.json`: `{"domain": {"allow_outside": ["~/cesta", "/etc", "sudo"]}}` (`sudo` povolí príkaz sudo). Platí aj pre `~/services/<repo>` (nainštalované vydanie): inak sa mení iba inštaláciou tagu, ale záznam v `allow_outside` ho povolí. Značku `.agentic-domain` agent nezmení.
 
+### Premenovanie projektu
+
+1. Ukonči session projektu (Windows: ukonči aj nečinný `claude.exe`, ktorý T3 drží pre vlákno projektu, inak presun zlyhá).
+2. Premenuj priečinok repa (aj repo na GitHube). Adaptér netreba spúšťať znova: cesta k brainu je relatívna.
+3. Pošta: meno projektu je názov priečinka repa. `comms key add --sender <nové-meno>`, nový kľúč zapíš do `<brain>/local/comms.json`, starý `comms key remove --sender <staré-meno>`.
+4. V T3 zmeň priečinok projektu (`workspaceRoot`) na novú cestu.
+
 ### Jeden brain na viacerých počítačoch
 
-Každý počítač má vlastný klon brainu a stabilné meno stroja v `~/.config/agentic-flow/machine-id` (pri prvom behu z hostname, dá sa prepísať). Štart session stiahne brain z origin. Logy sa zapisujú do `logs/<stroj>/<dátum>.log` (iba pridávaním); spojený pohľad je v `local/logs/`. Pri synchronizácii sa `holder.json` vyrieši automaticky (platí origin a nový držiteľ sa overí), pri handoveri sa zachovajú obe verzie s poznámkou a `topic.json` sa zlúči po poliach. Pri ostatných súboroch skript vypíše príkaz `brain.mjs resolve <súbor> --keep local|remote`. Držiteľ témy je vlákno na konkrétnom stroji. Prechod na iný stroj: `topic.mjs handoff <téma> --task … --done … --next …`, potom na druhom stroji `topic.mjs claim <téma>`. Ak tému drží iný stroj bez aktivity dlhšie ako `topics.stale_machine_hours` (predvolene 12), claim ponúkne prevzatie po súhlase operátora. Všetky stroje drží na jednom vydaní `{"workflow_version": "v0.9.11"}` v `policy.json` brainu (od v0.9.11): štart session prepne inštaláciu vydania na tento tag. Hodnota `"latest"` (od v0.9.13) prepne pri každom štarte session na najnovšie vydanie z origin: stroj dostane každé vydanie bez úpravy pinu, nikdy vývojovú vetvu.
+Každý počítač má vlastný klon brainu a stabilné meno stroja v `~/.config/agentic-flow/machine-id` (pri prvom behu z hostname, dá sa prepísať). Štart session stiahne brain z origin. Logy sa zapisujú do `logs/<stroj>/<dátum>.log` (iba pridávaním); spojený pohľad je v `local/logs/`. Pri synchronizácii sa `holder.json` vyrieši automaticky (platí origin a nový držiteľ sa overí), pri handoveri sa zachovajú obe verzie s poznámkou a `topic.json` sa zlúči po poliach. Pri ostatných súboroch skript vypíše príkaz `brain.mjs resolve <súbor> --keep local|remote`. Držiteľ témy je vlákno na konkrétnom stroji. Prechod na iný stroj: `topic.mjs handoff <téma> --task … --done … --next …`, potom na druhom stroji `topic.mjs claim <téma>`. Ak tému drží iný stroj bez aktivity dlhšie ako `topics.stale_machine_hours` (predvolene 12), claim ponúkne prevzatie po súhlase operátora. Všetky stroje drží na jednom vydaní `{"workflow_version": "v0.9.11"}` v `policy.json` brainu (od v0.9.11): štart session prepne inštaláciu vydania na tento tag. Hodnota `"latest"` (od v0.9.13) prepne pri každom štarte session na najnovšie vydanie z origin: stroj dostane každé vydanie bez úpravy pinu, nikdy vývojovú vetvu. Inštalácia je jedna pre všetky projekty na stroji: pin maj vo všetkých brainoch na stroji rovnaký. Ak sa líšia (od v0.9.14), inštaláciu prepne iba brain, ktorý ju nastavil naposledy, alebo brain, ktorému si pin práve zmenil; ostatné ju neprepnú späť a pri štarte nahlásia `workflow not switched … set the same workflow_version in every brain on this machine`.
 
 ### Cez agenta
 
@@ -153,8 +181,8 @@ Potom ukonči session a spusti `claude` znova, aby sa plugin načítal.
 ## Prvé použitie
 
 - **Spustenie vlákna:** v T3 dostane vlákno ID automaticky. V termináli spusti `node ~/.claude/skills/workflow/bin/thread.mjs` (vygeneruje `WORKFLOW_THREAD_ID` a spustí `claude`; ďalšie argumenty za `--` idú harnessu, napr. `-- --resume`). Bez stabilného ID vlákno nemôže zabrať tému.
-- **Pri štarte** začne prvá odpoveď agenta stavovým blokom: `Téma: <id>` (pri čakajúcej pošte aj `Pošta: n`), alebo `Téma: žiadna`, zoznam voľných tém a otázka `Aká bude téma?`; tá iba vtedy, keď téma nie je známa (zadanie, ktoré tému menuje, ju nevyvolá, P-050). Agent navyše pri každom tvojom prompte dostane stavový riadok `thread <id> | topic <id> (<state>, mode <mode>) | mail: n`, aj po `/clear` a `--resume`; ten vidí iba agent.
-- **Hlavné vlákno persony** drží trvalú tému `main` (`topic main`, raz v hlavnom vlákne); jeho blok ukáže `Téma: main` a počíta poštu `@<persona>/main`. **Téma pre nové vlákno:** agent založí prázdne vlákno a `topic create <id> --subject "…" --for-thread <id vlákna>`, nové vlákno tému drží od prvého ťahu.
+- **Pri štarte** začne prvá odpoveď agenta stavovým blokom: `<projekt> / <téma>` (pri čakajúcej pošte aj `Pošta: n`), alebo `<projekt> / bez témy`, zoznam voľných tém (`Dostupné témy:`) a otázka `Aká bude téma?`; na odpoveď čaká vlákno na teba, samo sa nebudí. Otázka padne iba vtedy, keď téma nie je známa (zadanie, ktoré tému menuje, ju nevyvolá, P-050). Agent navyše pri každom tvojom prompte dostane stavový riadok `thread <id> | topic <id> (<state>, mode <mode>) | mail: n`, aj po `/clear` a `--resume`; ten vidí iba agent.
+- **Hlavné vlákno persony** drží trvalú tému `main` (`topic main`, raz v hlavnom vlákne); jeho blok ukáže `<persona> / main` a počíta poštu `@<persona>/main`. **Téma pre nové vlákno:** agent založí prázdne vlákno a `topic create <id> --subject "…" --for-thread <id vlákna>`, nové vlákno tému drží od prvého ťahu.
 - **Téma:** „založ tému `<id>` s predmetom …“ → agent spustí `workflow:topic` (`create`, pri kóde vznikne worktree `<doména>/.worktrees/<repo>/<id>/`, mimo domény klon `../<projekt>-topics/<id>/`). Dve vlákna nemôžu držať tú istú tému; prevzatie len na tvoj pokyn.
 - **Ukladanie:** „ulož …“, „zapamätaj si …“, „volám sa …“ → `workflow:save`. Ručný zápis do brain agent nemôže (deny + pre-commit).
 - **Ukončenie:** „hotovo“ → `workflow:done` (handover → voľná, téma `free`); „téma je hotová“ → `done --topic` (zlúčenie do hlavnej vetvy, archivácia).
@@ -170,7 +198,7 @@ Zapnutie v projekte (všetky kroky mimo bežiacej session):
 
    ```
    <koreň>/
-     comms/                  pošta (git clone <adresa-repa-agentic-comms> comms)
+     comms/                  pošta (git clone https://github.com/gavalierm/agentic-comms-public.git comms)
      projekt-a/
        <repo-projektu>/
        <brain-projektu>/
@@ -245,7 +273,7 @@ git -C ~/.claude/skills/workflow checkout v<nová-verzia>
 
 Windows: to isté s `-C "$env:USERPROFILE\.claude\skills\workflow"`.
 
-Robí sa mimo bežiacej session; zmeny platia od ďalšieho štartu. Všetky projekty na stroji, ktoré používajú stabilnú verziu, majú tú istú verziu (zámer). Verziu vidíš pri štarte session (`workflow <sha>`). Ak `checkout` hlási lokálne zmeny, v klone niekto zapisoval; klon má byť čistý (pozri Riešenie problémov).
+Robí sa mimo bežiacej session; zmeny platia od ďalšieho štartu. Všetky projekty na stroji, ktoré používajú stabilnú verziu, majú tú istú verziu (zámer). Nainštalované vydanie: `git -C ~/.claude/skills/workflow describe --tags` (agent ho dostane pri štarte ako riadok `workflow <sha>`). Ak `checkout` hlási lokálne zmeny, v klone niekto zapisoval; klon má byť čistý (pozri Riešenie problémov).
 
 ## Vývojová verzia (kanál dev)
 
@@ -278,7 +306,7 @@ Projekty, ktoré majú workflow zapnutý, pri štarte iba oznámia chýbajúci p
 | Prejav | Príčina | Riešenie |
 |---|---|---|
 | `/plugins` plugin `workflow` nezobrazuje | klon je v inom priečinku alebo chýba `.claude-plugin/plugin.json` | over cestu `~/.claude/skills/workflow/.claude-plugin/plugin.json` |
-| plugin je v zozname, ale pri štarte chýba riadok `workflow <sha>` | projekt nemá `enabledPlugins`, alebo si session nespustil v koreni projektu, alebo nie je potvrdená dôvera priečinku | over `.claude/settings.json`, spusti `claude` v koreni, potvrď dôveru |
+| plugin je v zozname, ale prvá odpoveď agenta nezačína stavovým blokom `<projekt> / …` | projekt nemá `enabledPlugins`, alebo si session nespustil v koreni projektu, alebo nie je potvrdená dôvera priečinku | over `.claude/settings.json`, spusti `claude` v koreni, potvrď dôveru |
 | `node: command not found` / `'node' is not recognized` | Node nie je nainštalovaný alebo nie je v PATH | nainštaluj Node 22+, reštartuj terminál, `node --version` |
 | pri štarte „brain not found“ | zlá cesta v `.workflow.json`, alebo brain na tomto stroji leží inde | oprav cestu (relatívna, s `/`), alebo doplň `local/workflow.json` |
 | `git pull` hlási lokálne zmeny v klone | do klonu niekto zapisoval (nemá) | `git -C ~/.claude/skills/workflow status`; zmeny zahoď iba vedome (`git checkout -- .`), potom `pull` |

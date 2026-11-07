@@ -126,6 +126,9 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
   return { text, chars: text.length, overLimit, notices, rules, source, status: operatorStatus(ctx, info) };
 }
 
+/** The start question of a thread without a topic (P-050); Stop arms no auto timer after it. */
+export const TOPIC_QUESTION = 'Aká bude téma?';
+
 /** Status block shown to the operator at start (P-050): topic, free topics and the question when none is held, waiting mail. */
 export function operatorStatus(ctx, info) {
   const lines = [];
@@ -136,7 +139,7 @@ export function operatorStatus(ctx, info) {
     lines.push(`${ctx.projectName} / bez témy`, '', 'Dostupné témy:');
     const free = freeTopics(ctx);
     lines.push(...(free.length ? free.map((t) => `- ${t.id}${t.subject && t.subject !== t.id ? ` – ${t.subject}` : ''}`) : ['- žiadne']));
-    lines.push('', 'Aká bude téma?');
+    lines.push('', TOPIC_QUESTION);
   }
   if (info.mail.count) lines.splice(1, 0, `Pošta: ${info.mail.count}${info.mail.blockers ? ` (${info.mail.blockers} blocker)` : ''}${info.mail.steers ? ` (${info.mail.steers} steer)` : ''}`);
   return lines.join('\n');

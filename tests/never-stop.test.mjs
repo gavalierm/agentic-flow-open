@@ -166,3 +166,17 @@ test('operatorQuestion: a P-056 override note (option already taken) is not an o
   assert.equal(operatorQuestion('Hotové.\n\n**Pre teba:** I took option A; B and C remain.'), null);
   assert.equal(operatorQuestion('**Pre teba:** chýba heslo k účtu, bez neho sa nedá prihlásiť.'), 'Pre teba');
 });
+
+test('Stop: a thread without a topic asking the operator for one gets no auto timer; with a topic it does (flow-public#1)', () => {
+  const fx = setup();
+  try {
+    fx.hook('user-prompt-submit.mjs', { prompt: 'spustam' });
+    const ask = 'pilot / bez témy\n\nDostupné témy:\n- žiadne\n\nAká bude téma?';
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: ask }).json.decision, undefined);
+    assert.equal(activeTimer(stateOf(fx)), null, 'no timer: nothing to continue, the operator answers the topic question');
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
+    fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
+    fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Hotová prvá časť. Pokračovať variantom A?' });
+    assert.equal(stateOf(fx).timer?.auto, true, 'a held topic still gets the P-057 timer');
+  } finally { fx.cleanup(); }
+});

@@ -19,6 +19,7 @@ import { flushBuffer, proposalKey } from '../scripts/logs.mjs';
 import { unpushedCount, brainSync } from '../scripts/brain.mjs';
 import { recordTurn, isMainTopic } from '../scripts/comms.mjs';
 import { heldTopics } from '../scripts/topic.mjs';
+import { TOPIC_QUESTION } from '../scripts/boot.mjs';
 import { waitingClaim, operatorQuestion, operatorWait, waitOnlyStep, validWaker, activeTimer, setTimer, AUTO_TIMER_MS, AUTO_TIMER_MAX_MS, OPERATOR_TIMER_MS, OPERATOR_TIMER_MAX_MS, IDLE_RING_MS } from '../scripts/waker.mjs';
 
 export const HOOK_META = { event: 'Stop', class: 'c', limit: '2 lines (queued to next prompt); 1 block reason', principles: ['P-003', 'P-026', 'P-030', 'P-040', 'P-042', 'P-043', 'P-059', 'P-057'] };
@@ -189,7 +190,10 @@ export function run(input) {
     // "the operational mess should not be written at all"). Code arms the timer silently instead.
     const paused = held.some((t) => t.state === 'paused') && !work;
     // A topic whose next step only waits gets idle rings (closeTurn), not auto timers on top of them.
-    if (waiting && !paused && !idleWait) {
+    // A thread without a topic that asks the P-050 topic question waits for the operator's choice, there is no work to
+    // continue: a timer turn told to "decide with your recommended option" would pick the topic itself (flow-public#1).
+    const noWork = !held.length && operatorQuestion(msg) === TOPIC_QUESTION;
+    if (waiting && !paused && !idleWait && !noWork) {
       const st = readThreadState(ctx.brainDir, ctx.thread);
       const n = Number(st.auto_timer_n || 0);
       // Waiting on the operator rings in hours (operator 2026-11-03), waiting on a job in minutes.

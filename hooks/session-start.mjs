@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // SessionStart (startup, resume, clear, compact): boot sequence P-021 items 1, 3-7. Output class: boot context, limit 15 000 chars.
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { readHookInput, emit, contextOutput, isMain } from '../scripts/hooks-io.mjs';
 import { loadContext } from '../scripts/config.mjs';
 import { buildBootContext } from '../scripts/boot.mjs';
@@ -44,14 +46,58 @@ export function pullBrain(ctx) {
  * Brain policy `workflow_version` (P-040): this machine runs the release the brain is pinned to. Only a clean release
  * install is switched; this session's hooks were already loaded, so the switch takes full effect in the next session.
  */
-export function pinWorkflow(ctx, root = PLUGIN_ROOT) {
+export function pinWorkflow(ctx, root = PLUGIN_ROOT, env = process.env) {
   const want = ctx.policy?.workflow_version;
   if (!want) return null;
+  const conflict = pinConflict(ctx, String(want), env);
+  if (conflict) return conflict;
   let r;
   try { r = pinClone(root, want); } catch (err) { r = { status: 'failed', reason: err.message }; }
+  if (r.status === 'updated' || r.status === 'current') recordPin(ctx, String(want), env, true);
   if (r.status === 'updated') return `workflow switched ${r.from} -> ${r.to} per brain policy workflow_version; this session started on ${r.from}: hooks and skills load fully in the next session (tell the operator) (P-040)`;
   if (r.status === 'failed' || (r.status === 'skipped' && !r.dev)) return `workflow not switched to ${r.to || want} (brain policy workflow_version): ${r.reason}`;
   return null;
+}
+
+/**
+ * One install serves every project on the machine, the pin lives in each brain (issue flow-public#2): two brains with
+ * different pins switched the shared clone back and forth at every start. `~/.config/agentic-flow/pin.json` records which
+ * brain set the clone and the pin each brain had last time. The clone follows the brain that set it, or a brain whose pin
+ * the operator just changed; any other brain with a different pin reports the conflict and does not switch.
+ */
+function pinFile(env) {
+  return env.WORKFLOW_PIN_FILE || path.join(env.HOME || os.homedir(), '.config', 'agentic-flow', 'pin.json');
+}
+
+function readPins(env) {
+  try { return JSON.parse(fs.readFileSync(pinFile(env), 'utf8')) || {}; } catch { return {}; }
+}
+
+function brainKey(ctx) {
+  try { return fs.realpathSync(ctx.brainDir); } catch { return ctx.brainDir; }
+}
+
+export function pinConflict(ctx, want, env = process.env) {
+  if (!ctx.brainDir) return null;
+  const pins = readPins(env);
+  const brain = brainKey(ctx);
+  const owner = pins.clone?.brain;
+  const changed = pins.brains?.[brain] !== undefined && pins.brains[brain] !== want;
+  if (!owner || owner === brain || changed || pins.clone.version === want || !fs.existsSync(owner)) return null;
+  recordPin(ctx, want, env, false);
+  return `workflow not switched to ${want} (brain policy workflow_version): brain ${owner} pins ${pins.clone.version} and this machine has one install for all projects; set the same workflow_version in every brain on this machine (tell the operator) (P-040)`;
+}
+
+function recordPin(ctx, want, env, setClone) {
+  if (!ctx.brainDir) return;
+  const pins = readPins(env);
+  const brain = brainKey(ctx);
+  const next = { ...pins, brains: { ...(pins.brains || {}), [brain]: want } };
+  if (setClone) next.clone = { version: want, brain, at: new Date().toISOString() };
+  try {
+    fs.mkdirSync(path.dirname(pinFile(env)), { recursive: true });
+    fs.writeFileSync(pinFile(env), `${JSON.stringify(next, null, 2)}\n`);
+  } catch { /* the record is advisory: a read-only home never fails the start */ }
 }
 
 /** T3-WORKAROUND(t3-clear-cursor) T3 /clear workaround (t3code#24152): record T3's resume cursor, redirect it to the new session on clear. */
